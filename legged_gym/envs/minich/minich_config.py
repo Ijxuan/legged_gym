@@ -113,7 +113,7 @@ class MiniChRoughCfg(LeggedRobotCfg):
             # 抑制左右髋同向内收/外展，避免出现内八站姿。
             hip_symmetry = -5.0
             # 仅在零速度目标下将全身关节拉回初始化 default 站姿。
-            zero_command_default_pose = -2.0
+            zero_command_default_pose = -10.0
             # The target-height function returns +1 at 0.26 m. With the
             # current +0.3 scale and 20 ms control step, that is +0.006/step.
             orientation = -1.0
@@ -121,7 +121,7 @@ class MiniChRoughCfg(LeggedRobotCfg):
             # At low x/y commands, first require all four feet to support and
             # then nudge their normal-force shares toward an even split.
             low_speed_missing_support_feet = -1.0
-            low_speed_load_balance = -5.0
+            low_speed_load_balance = -1.0
 
 
 class MiniChRoughCfgPPO(LeggedRobotCfgPPO):
