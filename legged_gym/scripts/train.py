@@ -28,19 +28,68 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-import numpy as np
-import os
-from datetime import datetime
+import signal
 
 import isaacgym
 from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry
-import torch
+from legged_gym.utils.policy_export import attach_periodic_jit_export, export_latest_jit
+
+
+class TrainingInterrupted(KeyboardInterrupt):
+    """Raised at a safe Python boundary after SIGINT or SIGTERM."""
+
+
+def _raise_training_interrupted(signum, _frame):
+    signal_name = signal.Signals(signum).name
+    print(f"Received {signal_name}; exporting the latest complete checkpoint before exit.")
+    raise TrainingInterrupted(signal_name)
+
+
+def _install_exit_signal_handlers():
+    previous_handlers = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, _raise_training_interrupted)
+    return previous_handlers
+
+
+def _restore_signal_handlers(previous_handlers):
+    for signum, handler in previous_handlers.items():
+        signal.signal(signum, handler)
+
 
 def train(args):
     env, env_cfg = task_registry.make_env(name=args.task, args=args)
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
-    ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
+    jit_export_interval = train_cfg.runner.jit_export_interval
+    jit_export_on_exit = train_cfg.runner.jit_export_on_exit
+    if jit_export_interval > 0:
+        if train_cfg.runner.save_interval <= 0 or jit_export_interval % train_cfg.runner.save_interval != 0:
+            raise ValueError(
+                "jit_export_interval must be a positive multiple of save_interval so an exact checkpoint exists."
+            )
+        attach_periodic_jit_export(ppo_runner, jit_export_interval)
+        print(f"Automatic TorchScript export enabled every {jit_export_interval} iterations.")
+
+    previous_handlers = _install_exit_signal_handlers() if jit_export_on_exit else {}
+    try:
+        ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
+    except BaseException:
+        if jit_export_on_exit:
+            try:
+                export_latest_jit(ppo_runner)
+            except FileNotFoundError:
+                print("No completed model checkpoint exists yet; skipping policy_latest.jit export.")
+            except Exception as error:
+                print(f"ERROR: failed to export policy_latest.jit during exit: {error}")
+        raise
+    else:
+        if jit_export_on_exit:
+            export_latest_jit(ppo_runner)
+    finally:
+        _restore_signal_handlers(previous_handlers)
+
 
 if __name__ == '__main__':
     args = get_args()

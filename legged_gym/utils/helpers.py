@@ -187,6 +187,8 @@ def export_policy_as_jit(actor_critic, path):
         path = os.path.join(path, 'policy_1.pt')
         model = copy.deepcopy(actor_critic.actor).to('cpu')
         traced_script_module = torch.jit.script(model)
+        if not hasattr(traced_script_module, "save"):
+            raise RuntimeError("TorchScript export requires PYTORCH_JIT enabled. Keep EXPORT_POLICY=False for play-only checks, or unset PYTORCH_JIT before exporting.")
         traced_script_module.save(path)
 
 
@@ -216,6 +218,8 @@ class PolicyExporterLSTM(torch.nn.Module):
         path = os.path.join(path, 'policy_lstm_1.pt')
         self.to('cpu')
         traced_script_module = torch.jit.script(self)
+        if not hasattr(traced_script_module, "save"):
+            raise RuntimeError("TorchScript export requires PYTORCH_JIT enabled. Keep EXPORT_POLICY=False for play-only checks, or unset PYTORCH_JIT before exporting.")
         traced_script_module.save(path)
 
     

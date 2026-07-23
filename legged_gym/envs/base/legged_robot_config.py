@@ -39,6 +39,12 @@ class LeggedRobotCfg(BaseConfig):
         env_spacing = 3.  # not used with heightfields/trimeshes 
         send_timeouts = True # send time out information to the algorithm
         episode_length_s = 20 # episode length in seconds
+        # Maximum yaw-independent roll/pitch tilt from upright before reset,
+        # in radians. None preserves the original contact-only behavior.
+        max_base_tilt = None
+        # Minimum base height above the local terrain before reset, in meters.
+        # None preserves the original behavior for tasks that do not opt in.
+        min_base_height = None
 
     class terrain:
         mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
@@ -71,6 +77,9 @@ class LeggedRobotCfg(BaseConfig):
         num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
         resampling_time = 10. # time before command are changed[s]
         heading_command = True # if true: compute ang vel command from heading error
+        # Fraction of sampled commands that are forced to exact x/y/yaw zero.
+        # Leave at zero for existing tasks.
+        zero_command_probability = 0.
         class ranges:
             lin_vel_x = [-1.0, 1.0] # min max [m/s]
             lin_vel_y = [-1.0, 1.0]   # min max [m/s]
@@ -122,10 +131,20 @@ class LeggedRobotCfg(BaseConfig):
         randomize_friction = True
         friction_range = [0.5, 1.25]
         randomize_base_mass = False
-        added_mass_range = [-1., 1.]
+        added_mass_range = [-1., 7.]
         push_robots = True
         push_interval_s = 15
         max_push_vel_xy = 1.
+        # Actuator domain randomization is opt-in. Gain scales are sampled
+        # independently per environment and joint at every episode reset.
+        randomize_pd_gains = False
+        kp_scale_range = [1.0, 1.0]
+        kd_scale_range = [1.0, 1.0]
+        # Delay is sampled once per environment at reset and measured in
+        # physics substeps. A policy action is held for ``decimation`` such
+        # substeps, so this can represent sub-policy-period latency.
+        randomize_action_delay = False
+        action_delay_sim_steps = [0, 0]
 
     class rewards:
         class scales:
@@ -144,6 +163,9 @@ class LeggedRobotCfg(BaseConfig):
             feet_stumble = -0.0 
             action_rate = -0.01
             stand_still = -0.
+            # Low-speed foot-support shaping is opt-in for robot tasks.
+            low_speed_missing_support_feet = -0.
+            low_speed_load_balance = -0.
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)
@@ -151,7 +173,44 @@ class LeggedRobotCfg(BaseConfig):
         soft_dof_vel_limit = 1.
         soft_torque_limit = 1.
         base_height_target = 1.
+        # When set, use a one-sided height penalty below this terrain-relative
+        # height instead of tracking ``base_height_target`` symmetrically.
+        # None preserves the original target-height reward behavior.
+        base_height_min = None
+        # When set, height shaping becomes a target reward: raw 1 at
+        # ``base_height_target``, decaying linearly to raw 0 over this many
+        # metres of deviation on either side. None keeps the legacy reward.
+        base_height_reward_drop_height = None
+        # If set, penalize roll/pitch only when the commanded x/y speed is no
+        # larger than this value. ``None`` preserves the original all-speed
+        # orientation reward behavior.
+        orientation_command_threshold = None
+        # Ignore the base-height error immediately after reset, while the
+        # randomized initial joint configuration and root velocity settle.
+        # This is in seconds and defaults to no warm-up for existing tasks.
+        base_height_warmup_s = 0.
+        # A foot is considered a supporting ground contact only when its
+        # world-up normal force strictly exceeds this threshold. Collision and
+        # termination thresholds intentionally remain separate.
+        foot_contact_force_threshold = 1.
+        # ``feet_air_time`` keeps the original 1 N touchdown definition by
+        # default. A task may optionally require a larger normal force for
+        # low-speed commands without changing its other support rewards.
+        feet_air_time_contact_force_threshold = 1.
+        feet_air_time_low_speed_contact_force_threshold = None
+        feet_air_time_low_speed_command_threshold = 0.
+        # Low-speed support rewards use their own command gate so changing an
+        # orientation threshold does not silently change support behavior.
+        low_speed_support_command_threshold = 0.
+        # Ignore low-speed support shaping during the reset settling transient.
+        low_speed_support_warmup_s = 0.
         max_contact_force = 100. # forces above this value are penalized
+        # Optional task-local joint pairs whose deviations from the default
+        # pose should be mirror-symmetric. Empty keeps existing tasks unchanged.
+        hip_symmetry_joint_pairs = ()
+        # A default-pose regularizer is active only when all three velocity
+        # commands are below this norm.
+        zero_command_threshold = 0.1
 
     class normalization:
         class obs_scales:
@@ -235,6 +294,10 @@ class LeggedRobotCfgPPO(BaseConfig):
 
         # logging
         save_interval = 50 # check for potential saves every this many iterations
+        # Disabled by default. Tasks that need deployment artifacts can enable
+        # periodic checkpoint-to-TorchScript exports without changing saves.
+        jit_export_interval = 0
+        jit_export_on_exit = False
         experiment_name = 'test'
         run_name = ''
         # load and resume
