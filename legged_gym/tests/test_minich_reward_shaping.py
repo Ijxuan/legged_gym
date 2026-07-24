@@ -254,6 +254,53 @@ class TestMiniChRewardShaping(unittest.TestCase):
         self.assertTrue(torch.allclose(missing_support, torch.tensor([0.0, 1.0, 0.0, 0.0])))
         self.assertTrue(torch.allclose(load_balance, torch.tensor([0.0, 0.0, 0.03, 0.0])))
 
+    def test_zero_command_elapsed_tracks_only_an_uninterrupted_stand(self):
+        robot = SimpleNamespace(
+            commands=torch.tensor([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.2],
+                [0.05, 0.0, 0.0],
+            ]),
+            zero_command_elapsed=torch.tensor([0.98, 0.40, 0.00]),
+            dt=0.02,
+            cfg=SimpleNamespace(rewards=SimpleNamespace(
+                zero_command_threshold=0.1,
+            )),
+        )
+
+        LeggedRobot._update_zero_command_elapsed(robot)
+
+        self.assertTrue(torch.allclose(
+            robot.zero_command_elapsed, torch.tensor([1.00, 0.00, 0.02])
+        ))
+
+    def test_low_speed_support_waits_one_second_only_after_exact_zero_command(self):
+        robot = SimpleNamespace(
+            commands=torch.tensor([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.1, 0.0, 0.0],
+                [0.26, 0.0, 0.0],
+            ]),
+            zero_command_elapsed=torch.tensor([0.98, 1.00, 0.00, 2.00]),
+            episode_length_buf=torch.tensor([50, 50, 50, 50]),
+            dt=0.02,
+            cfg=SimpleNamespace(rewards=SimpleNamespace(
+                zero_command_threshold=0.1,
+                low_speed_support_command_threshold=0.25,
+                low_speed_support_warmup_s=0.5,
+                low_speed_support_zero_command_delay_s=1.0,
+            )),
+        )
+
+        support_mask = LeggedRobot._low_speed_support_mask(robot)
+
+        # Exact zero waits for its own 1 s timer; a slow nonzero command does
+        # not inherit that delay, and a command above 0.25 m/s remains off.
+        self.assertTrue(torch.equal(
+            support_mask, torch.tensor([False, True, True, False])
+        ))
+
     def test_zero_command_sampling_can_force_an_exact_zero_target(self):
         robot = SimpleNamespace(
             device="cpu",
@@ -341,14 +388,14 @@ class TestMiniChRewardShaping(unittest.TestCase):
             (("FL_hip_joint", "FR_hip_joint"), ("RL_hip_joint", "RR_hip_joint")),
         )
         self.assertEqual(MiniChRoughCfg.rewards.scales.hip_symmetry, -5.0)
-        self.assertEqual(MiniChRoughCfg.rewards.scales.zero_command_default_pose, -2.0)
+        self.assertEqual(MiniChRoughCfg.rewards.scales.zero_command_default_pose, -10.0)
         self.assertEqual(MiniChRoughCfg.rewards.scales.orientation, -1.0)
         self.assertEqual(MiniChRoughCfg.rewards.scales.base_height, 0.3)
         self.assertIsNone(MiniChRoughCfg.rewards.base_height_min)
         self.assertEqual(MiniChRoughCfg.rewards.base_height_target, 0.26)
         self.assertEqual(MiniChRoughCfg.rewards.base_height_reward_drop_height, 0.04)
         self.assertEqual(MiniChRoughCfg.rewards.scales.low_speed_missing_support_feet, -1.0)
-        self.assertEqual(MiniChRoughCfg.rewards.scales.low_speed_load_balance, -5.0)
+        self.assertEqual(MiniChRoughCfg.rewards.scales.low_speed_load_balance, -1.0)
         self.assertEqual(MiniChRoughCfg.rewards.orientation_command_threshold, 0.25)
         self.assertEqual(MiniChRoughCfg.rewards.base_height_warmup_s, 0.0)
         self.assertEqual(MiniChRoughCfg.rewards.foot_contact_force_threshold, 10.0)
@@ -357,6 +404,8 @@ class TestMiniChRewardShaping(unittest.TestCase):
         self.assertEqual(MiniChRoughCfg.rewards.feet_air_time_low_speed_command_threshold, 0.2)
         self.assertEqual(MiniChRoughCfg.rewards.low_speed_support_command_threshold, 0.25)
         self.assertEqual(MiniChRoughCfg.rewards.low_speed_support_warmup_s, 0.5)
+        self.assertEqual(MiniChRoughCfg.rewards.low_speed_support_zero_command_delay_s, 1.0)
+        self.assertEqual(MiniChRoughCfg.commands.resampling_time, 5.0)
         self.assertEqual(MiniChRoughCfg.commands.zero_command_probability, 0.10)
         self.assertEqual(MiniChRoughCfg.env.min_base_height, 0.15)
 

@@ -32,20 +32,20 @@ BASE_MASS_ADDED_KG = 7.0
 # 注册的平地任务名。它决定使用 plane 地面，以及 48 维本体感觉观测。
 TASK_NAME = "minich_flat"
 # logs/flat_minich/ 下的训练 run 文件夹名；脚本不会自动选择最新 run。
-LOAD_RUN = "Jul23_12-12-15_flat_48obs_2048x4000"
+LOAD_RUN = "Jul23_16-03-31_flat_48obs_2048x4000"
 # 上述 run 中加载的 model_<轮数>.pt；改为 -1 才表示该 run 中最新的模型。
-CHECKPOINT = 4000
+CHECKPOINT = 2050
 # 策略输入维度。平地策略固定为 48：速度(6)、重力投影(3)、命令(3)、
 # 关节位置/速度(24)和上一帧动作(12)。它必须与 checkpoint 的网络输入一致。
 OBSERVATION_DIM = 48
 
 # ===== 回放命令时序：零速站立 -> 前进 -> 零速站立 =====
 # 中间阶段施加的机身前向速度目标，单位 m/s；横移和偏航目标始终为 0。
-FORWARD_SPEED_M_S = 1.0
+FORWARD_SPEED_M_S = 1.5
 # 起始零速度站立、前进和末尾零速度站立各自持续时间，单位 s。
-STAND_BEFORE_S = 10.0
-FORWARD_S = 6.0
-STAND_AFTER_S = 6.0
+STAND_BEFORE_S = 2.0
+FORWARD_S = 10
+STAND_AFTER_S = 10.0
 # 是否允许环境在触发接触、倾角、高度或超时早停后调用 reset。
 # False 仅关闭本 viewer 的重置，方便持续观察低蹲/跌倒后的策略输出；不改变训练配置。
 ENABLE_TERMINATION_RESET = False
@@ -845,6 +845,10 @@ class BaseHeightAndSupportMeter:
         self.height_warmup_s = float(env.cfg.rewards.base_height_warmup_s)
         self.support_command_threshold = float(env.cfg.rewards.low_speed_support_command_threshold)
         self.support_warmup_s = float(env.cfg.rewards.low_speed_support_warmup_s)
+        self.zero_command_threshold = float(env.cfg.rewards.zero_command_threshold)
+        self.zero_command_delay_s = float(getattr(
+            env.cfg.rewards, "low_speed_support_zero_command_delay_s", 0.0
+        ))
         self.phase = PHASE_ORDER[0]
         self.stats = {
             phase: {
@@ -874,6 +878,10 @@ class BaseHeightAndSupportMeter:
         robot_index = 0
         episode_seconds = float(env.episode_length_buf[robot_index].item()) * env.dt
         command_speed = float(torch.norm(env.commands[robot_index, :2]).item())
+        exact_zero_command = bool(
+            torch.norm(env.commands[robot_index, :3]).item() < self.zero_command_threshold
+        )
+        zero_command_elapsed = float(env.zero_command_elapsed[robot_index].item())
         raw_height = float(env._reward_base_height()[robot_index].item())
         raw_missing_support = float(env._reward_low_speed_missing_support_feet()[robot_index].item())
         raw_load_balance = float(env._reward_low_speed_load_balance()[robot_index].item())
@@ -888,9 +896,12 @@ class BaseHeightAndSupportMeter:
         stats = self.stats[self.phase]
         stats["samples"] += 1
         stats["height_active_samples"] += int(episode_seconds >= self.height_warmup_s)
-        stats["support_active_samples"] += int(
-            episode_seconds >= self.support_warmup_s and command_speed <= self.support_command_threshold
+        support_active = (
+            episode_seconds >= self.support_warmup_s
+            and command_speed <= self.support_command_threshold
+            and (not exact_zero_command or zero_command_elapsed >= self.zero_command_delay_s)
         )
+        stats["support_active_samples"] += int(support_active)
         stats["sum_height_m"] += base_height
         if self.height_reward_drop_height is not None:
             height_error_m = abs(base_height - self.height_target)
@@ -924,7 +935,8 @@ class BaseHeightAndSupportMeter:
         print(
             "\nBase-height and low-speed support rewards "
             f"({height_objective}; support active when "
-            f"||cmd_xy|| <= {self.support_command_threshold:.2f} m/s):"
+            f"||cmd_xy|| <= {self.support_command_threshold:.2f} m/s; "
+            f"exact zero waits {self.zero_command_delay_s:.1f} s):"
         )
         print(
             f"phase         height gate mean height  {height_error_label:11s}  height reward   support gate "

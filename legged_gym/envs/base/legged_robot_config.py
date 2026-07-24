@@ -181,9 +181,10 @@ class LeggedRobotCfg(BaseConfig):
         # ``base_height_target``, decaying linearly to raw 0 over this many
         # metres of deviation on either side. None keeps the legacy reward.
         base_height_reward_drop_height = None
-        # If set, penalize roll/pitch only when the commanded x/y speed is no
-        # larger than this value. ``None`` preserves the original all-speed
-        # orientation reward behavior.
+        # 若非 None，仅当平面目标速度
+        # sqrt(cmd_vx^2 + cmd_vy^2) 不大于该阈值（单位 m/s）时，才计算
+        # roll/pitch 姿态惩罚；它不是时间，也不包含偏航目标。None 表示
+        # 任意目标速度下均计算姿态惩罚。
         orientation_command_threshold = None
         # Ignore the base-height error immediately after reset, while the
         # randomized initial joint configuration and root velocity settle.
@@ -204,6 +205,11 @@ class LeggedRobotCfg(BaseConfig):
         low_speed_support_command_threshold = 0.
         # Ignore low-speed support shaping during the reset settling transient.
         low_speed_support_warmup_s = 0.
+        # For an exact stand command, optionally wait after the command changes
+        # from moving to zero before applying low-speed support/load shaping.
+        # This leaves the policy time to place its feet and settle its posture.
+        # Zero keeps the legacy behaviour for existing tasks.
+        low_speed_support_zero_command_delay_s = 0.
         max_contact_force = 100. # forces above this value are penalized
         # Optional task-local joint pairs whose deviations from the default
         # pose should be mirror-symmetric. Empty keeps existing tasks unchanged.

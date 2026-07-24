@@ -188,6 +188,7 @@ class LeggedRobot(BaseTask):
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
         self.feet_air_time[env_ids] = 0.
+        self.zero_command_elapsed[env_ids] = 0.
         self._reset_actuator_domain_randomization(env_ids)
         self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
@@ -350,6 +351,8 @@ class LeggedRobot(BaseTask):
             # heading. Preserve exact zero commands selected at resampling.
             self.commands[self.zero_command_mask, 2] = 0.
 
+        self._update_zero_command_elapsed()
+
         if self.cfg.terrain.measure_heights:
             self.measured_heights = self._get_heights()
         if self.cfg.domain_rand.push_robots and  (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
@@ -373,6 +376,12 @@ class LeggedRobot(BaseTask):
         self.zero_command_mask[env_ids] = torch.rand(len(env_ids), device=self.device) < self.cfg.commands.zero_command_probability
         zero_command_env_ids = env_ids[self.zero_command_mask[env_ids]]
         self.commands[zero_command_env_ids] = 0.
+
+    def _update_zero_command_elapsed(self):
+        """Track uninterrupted time under an exact x/y/yaw stand command."""
+        zero_command = torch.norm(self.commands[:, :3], dim=1) < self.cfg.rewards.zero_command_threshold
+        self.zero_command_elapsed[zero_command] += self.dt
+        self.zero_command_elapsed[~zero_command] = 0.
 
     def _compute_torques(self, actions):
         """ Compute torques from actions.
@@ -603,6 +612,7 @@ class LeggedRobot(BaseTask):
         self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, yaw vel, heading
         self.zero_command_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
+        self.zero_command_elapsed = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
@@ -974,7 +984,8 @@ class LeggedRobot(BaseTask):
         return torch.sum(torch.square(self.base_ang_vel[:, :2]), dim=1)
     
     def _reward_orientation(self):
-        # Penalize non flat base orientation
+        # 惩罚机身 roll/pitch 偏离水平。若配置了速度门控，则仅在当前
+        # xy 目标速度模长不超过阈值时生效；门控不涉及 episode 时间或偏航。
         orientation_error = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
         command_threshold = self.cfg.rewards.orientation_command_threshold
         if command_threshold is not None:
@@ -1084,10 +1095,24 @@ class LeggedRobot(BaseTask):
         return torch.clamp(self.contact_forces[:, self.feet_indices, 2], min=0.0)
 
     def _low_speed_support_mask(self):
-        """Gate order-free support shaping to settled zero/low-speed commands."""
+        """Gate order-free support shaping to settled low-speed commands.
+
+        Exact zero commands can receive a separate adjustment window whenever
+        the command switches from moving to standing.  Other slow commands
+        retain the normal reset-settling gate.
+        """
         low_speed = torch.norm(self.commands[:, :2], dim=1) <= self.cfg.rewards.low_speed_support_command_threshold
         settled = self.episode_length_buf * self.dt >= self.cfg.rewards.low_speed_support_warmup_s
-        return low_speed & settled
+        support_mask = low_speed & settled
+
+        zero_command_delay_s = getattr(
+            self.cfg.rewards, "low_speed_support_zero_command_delay_s", 0.0
+        )
+        if zero_command_delay_s > 0.0:
+            zero_command = torch.norm(self.commands[:, :3], dim=1) < self.cfg.rewards.zero_command_threshold
+            zero_command_ready = self.zero_command_elapsed >= zero_command_delay_s
+            support_mask &= ~zero_command | zero_command_ready
+        return support_mask
 
     def _reward_low_speed_missing_support_feet(self):
         """Penalize low-speed states with fewer than all feet supporting >Fz threshold."""

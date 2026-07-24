@@ -39,9 +39,12 @@ class MiniChRoughCfg(LeggedRobotCfg):
         decimation = 4
 
     class commands(LeggedRobotCfg.commands):
-        # Make the zero-command default-pose penalty visible often enough to
-        # learn a stable stand without changing the other tasks' distributions.
-        zero_command_probability = 0.10
+        # 每 5 s 重采样一次命令：20 s episode 内有四段命令，既能保留足够
+        # 长的稳定/调整窗口，也能更频繁地练习行走与零速站立切换。
+        resampling_time = 5.0
+        # 每次重采样时，有 30% 概率将 x/y/yaw 三个命令强制设为精确零，
+        # 让策略学习稳定站立，而不是只学习跟踪非零速度。
+        zero_command_probability = 0.30
 
     class asset(LeggedRobotCfg.asset):
         file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/mini_cheetah/urdf/mini_cheetah.urdf"
@@ -82,8 +85,10 @@ class MiniChRoughCfg(LeggedRobotCfg):
         )
         # Treat x/y/yaw command norm below this threshold as a stand command.
         zero_command_threshold = 0.1
-        # Keep roll/pitch upright for standing and very slow translation, but
-        # leave faster locomotion free to use the base attitude it needs.
+        # 仅在 sqrt(cmd_vx^2 + cmd_vy^2) <= 0.25 m/s 时计算 roll/pitch
+        # 姿态惩罚：零速/慢速时要求机身保持水平；超过 0.25 m/s 后该项为
+        # 0，让快速行走自行选择机身姿态。0.25 的单位是 m/s，不是 0.25 秒；
+        # 偏航目标 cmd_yaw 不参与这个门控。
         orientation_command_threshold = 0.25
         # The target band includes the reset height, so apply it immediately:
         # a 0.5 s free window previously let the zero-command policy crouch
@@ -93,6 +98,10 @@ class MiniChRoughCfg(LeggedRobotCfg):
         foot_contact_force_threshold = 10.0
         low_speed_support_command_threshold = 0.25
         low_speed_support_warmup_s = 0.5
+        # 从非零行走命令切换到精确零速命令后，前 1.0 s 暂不计算四足
+        # 支撑缺失/载荷均衡项，给策略调整落脚和机身姿态的时间。低速但非零
+        # 的命令仍仅使用上面的 reset warmup，不会额外等待。
+        low_speed_support_zero_command_delay_s = 1.0
         # Preserve the original 1 N walking touchdown event. Below 0.2 m/s,
         # however, a 10 N threshold prevents a lightly tapping RR foot from
         # being treated as an adequate ground contact by feet_air_time.
