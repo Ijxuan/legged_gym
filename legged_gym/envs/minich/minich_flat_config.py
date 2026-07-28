@@ -52,6 +52,7 @@ class MiniChFlatCfg(MiniChRoughCfg):
         # task while enabling base-mass variation for this new task.
         randomize_friction = True
         randomize_base_mass = True
+        added_mass_range = [-1.0, 1.0]
         push_robots = True
         # 对四条腿同时使用同一组大腿/小腿长度，避免引入非真实的左右不对称装配误差。
         randomize_leg_lengths = True

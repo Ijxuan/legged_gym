@@ -38,9 +38,9 @@
       </geometry>
     </visual>
     <inertial>
-            <mass value="3.3"/>
+            <mass value="3.8"/>
             <origin xyz="0.0 0.0 0.0"/>
-            <inertia ixx="0.011253" ixy="0" ixz="0" iyy="0.362030" iyz="0" izz="0.042673"/>
+            <inertia ixx="0.012958" ixy="0" ixz="0" iyy="0.416883" iyz="0" izz="0.049139"/>
         </inertial>
   </link>
     <joint name="floating_base" type="fixed">
@@ -134,10 +134,10 @@
     </joint>
     <link name="FR_thigh">
         <inertial>
-            <mass value="0.634"/>
+            <mass value="2.136"/>
             <origin xyz="0.0 0.016 -0.02"/>
-            <inertia ixx="0.001983" ixy="0.000245" ixz="0.000013" 
-                iyy="0.002103" iyz="0.0000015" izz="0.000408"/>
+            <inertia ixx="0.006681" ixy="0.000825" ixz="0.000044" 
+                iyy="0.007085" iyz="0.0000051" izz="0.001375"/>
         </inertial>
         <visual>
             <geometry>
@@ -247,10 +247,10 @@
     </joint>
     <link name="FL_thigh">
         <inertial>
-            <mass value="0.634"/>
+            <mass value="2.136"/>
             <origin xyz="0.0 0.016 -0.02"/>
-            <inertia ixx="0.001983" ixy="0.000245" ixz="0.000013" 
-                iyy="0.002103" iyz="0.0000015" izz="0.000408"/>
+            <inertia ixx="0.006681" ixy="0.000825" ixz="0.000044" 
+                iyy="0.007085" iyz="0.0000051" izz="0.001375"/>
         </inertial>
         <visual>
             <geometry>
@@ -359,10 +359,10 @@
     </joint>
     <link name="RR_thigh">
         <inertial>
-            <mass value="0.634"/>
+            <mass value="2.136"/>
             <origin xyz="0.0 0.016 -0.02"/>
-            <inertia ixx="0.001983" ixy="0.000245" ixz="0.000013" 
-                iyy="0.002103" iyz="0.0000015" izz="0.000408"/>
+            <inertia ixx="0.006681" ixy="0.000825" ixz="0.000044" 
+                iyy="0.007085" iyz="0.0000051" izz="0.001375"/>
         </inertial>
         <visual>
             <geometry>
@@ -477,10 +477,10 @@
     </joint>
     <link name="RL_thigh">
         <inertial>
-            <mass value="0.634"/>
+            <mass value="2.136"/>
             <origin xyz="0.0 0.016 -0.02"/>
-            <inertia ixx="0.001983" ixy="0.000245" ixz="0.000013" 
-                iyy="0.002103" iyz="0.0000015" izz="0.000408"/>
+            <inertia ixx="0.006681" ixy="0.000825" ixz="0.000044" 
+                iyy="0.007085" iyz="0.0000051" izz="0.001375"/>
         </inertial>
         <visual>
             <geometry>

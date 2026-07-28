@@ -42,11 +42,12 @@ class TestMiniChFlatConfig(unittest.TestCase):
         self.assertEqual(MiniChFlatCfg.commands.ranges.lin_vel_y, [-1.0, 1.0])
         self.assertEqual(MiniChFlatCfg.commands.ranges.ang_vel_yaw, [-1, 1])
         self.assertEqual(MiniChFlatCfg.commands.resampling_time, 5.0)
-        self.assertEqual(MiniChFlatCfg.commands.zero_command_probability, 0.10)
+        self.assertEqual(MiniChFlatCfg.commands.zero_command_probability, 0.30)
 
     def test_flat_task_keeps_domain_randomization_and_starts_fresh(self):
         self.assertTrue(MiniChFlatCfg.domain_rand.randomize_friction)
         self.assertTrue(MiniChFlatCfg.domain_rand.randomize_base_mass)
+        self.assertEqual(MiniChFlatCfg.domain_rand.added_mass_range, [-1.0, 1.0])
         self.assertTrue(MiniChFlatCfg.domain_rand.push_robots)
         self.assertTrue(MiniChFlatCfg.domain_rand.randomize_leg_lengths)
         self.assertTrue(MiniChFlatCfg.domain_rand.randomize_pd_gains)

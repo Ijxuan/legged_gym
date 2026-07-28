@@ -9,52 +9,64 @@ state randomization so an initial tilt can be inspected in Isaac Gym.
 
 import math
 from types import MethodType
+import xml.etree.ElementTree as ET
 
 import isaacgym
 from isaacgym import gymtorch
 import numpy as np
 import torch
 
+from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs import *
 from legged_gym.utils import Logger, get_args, task_registry
 
-INITIAL_BASE_HEIGHT_M = 0.50
+INITIAL_BASE_HEIGHT_M = 0.28
 # 设置回放开始时的机身高度，单位 m。
 
 # ===== 回放专用基座质量覆盖 =====
 # None：不覆盖，使用 URDF 的原始基座刚体质量。
-# 填入数值：给 URDF 基座刚体额外增加该质量，单位 kg；不是整机总质量。
-# 可设置范围为 [-1.0, 7.0] kg（含端点），与当前 minich_flat 训练时的
-# domain_rand.added_mass_range 完全一致。回放会固定使用该值，不做随机采样。
-BASE_MASS_ADDED_KG = 7.0
+# 填入数值：在 URDF 基座刚体质量上叠加该值，单位 kg；不是整机总质量。
+# 可填任意有限值，且不再受训练时 added_mass_range 随机范围限制；负数表示减重。
+# 例如 1.0 表示增加 1 kg，-1.0 表示减少 1 kg。回放会固定使用该值，不做随机采样。
+BASE_MASS_ADDED_KG = 0.0
 
 # ===== 回放对象：这几项必须与要看的训练结果匹配 =====
 # 注册的平地任务名。它决定使用 plane 地面，以及 48 维本体感觉观测。
 TASK_NAME = "minich_flat"
+# # logs/flat_minich/ 下的训练 run 文件夹名；脚本不会自动选择最新 run。
+# LOAD_RUN = "Jul23_16-03-31_flat_48obs_2048x4000"
+# # 上述 run 中加载的 model_<轮数>.pt；改为 -1 才表示该 run 中最新的模型。
+# CHECKPOINT = 2050
 # logs/flat_minich/ 下的训练 run 文件夹名；脚本不会自动选择最新 run。
-LOAD_RUN = "Jul23_16-03-31_flat_48obs_2048x4000"
+LOAD_RUN = "Jul24_12-45-55_flat_48obs_2048x4000"
 # 上述 run 中加载的 model_<轮数>.pt；改为 -1 才表示该 run 中最新的模型。
-CHECKPOINT = 2050
+CHECKPOINT = 2200
 # 策略输入维度。平地策略固定为 48：速度(6)、重力投影(3)、命令(3)、
 # 关节位置/速度(24)和上一帧动作(12)。它必须与 checkpoint 的网络输入一致。
 OBSERVATION_DIM = 48
 
+# ===== 回放专用动作缩放 =====
+# 关节目标 = 默认关节角 + 策略动作 * ACTION_SCALE，单位 rad / action。
+# 训练配置的值为 0.25；默认保留该值。可调为任意有限的非负值，0 表示始终
+# 以默认关节角为目标。此项只改变 viewer 的控制幅度，不改变策略网络输出。
+ACTION_SCALE = 0.25
+
 # ===== 回放命令时序：零速站立 -> 前进 -> 零速站立 =====
 # 中间阶段施加的机身前向速度目标，单位 m/s；横移和偏航目标始终为 0。
-FORWARD_SPEED_M_S = 1.5
+FORWARD_SPEED_M_S = 0.5
 # 起始零速度站立、前进和末尾零速度站立各自持续时间，单位 s。
-STAND_BEFORE_S = 2.0
-FORWARD_S = 10
-STAND_AFTER_S = 10.0
+STAND_BEFORE_S = 6.0
+FORWARD_S = 3
+STAND_AFTER_S = 6.0
 # 是否允许环境在触发接触、倾角、高度或超时早停后调用 reset。
 # False 仅关闭本 viewer 的重置，方便持续观察低蹲/跌倒后的策略输出；不改变训练配置。
 ENABLE_TERMINATION_RESET = False
 # 是否在回放期间打印机身相对地面的高度。当前关闭，避免高度日志淹没足端诊断输出。
-ENABLE_BASE_HEIGHT_PRINT = False
+ENABLE_BASE_HEIGHT_PRINT = True
 # 仅在 ENABLE_BASE_HEIGHT_PRINT=True 时使用：机身相对地面的高度打印间隔，单位 s。
 HEIGHT_PRINT_INTERVAL_S = 0.2
 # 左右两侧前、后足端间距的打印间隔，单位 s。每个命令阶段切换时也会额外打印一次。
-FOOT_SPACING_PRINT_INTERVAL_S = 0.2
+FOOT_SPACING_PRINT_INTERVAL_S = 2.0
 
 # ===== Isaac Gym 初始相机 =====
 # 相机位置 = 初始机身位置 + 此偏移，单位 m；负 x/负 y 表示从左后上方看机器人。
@@ -964,6 +976,15 @@ def total_play_steps(env_dt):
     return int(round((STAND_BEFORE_S + FORWARD_S + STAND_AFTER_S) / env_dt))
 
 
+def nominal_urdf_base_mass_kg(env_cfg):
+    asset_path = env_cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+    root = ET.parse(asset_path).getroot()
+    mass = root.find("link[@name='base']/inertial/mass")
+    if mass is None:
+        raise ValueError(f"URDF base link has no inertial mass: {asset_path}")
+    return float(mass.get("value"))
+
+
 def configure_flat_sequence_env(env_cfg):
     """Apply only viewer-local overrides; the registered training cfg is untouched."""
     env_cfg.env.num_envs = 1
@@ -987,22 +1008,25 @@ def configure_flat_sequence_env(env_cfg):
     # 否则“固定初始状态”的回放仍可能每次加载不同形态。
     env_cfg.domain_rand.randomize_leg_lengths = False
 
-    # 训练用的是“原始基座质量 + U[-1.0, 7.0] kg”。若指定回放覆盖值，
-    # 则沿用同一实现，但把采样范围收窄为 [value, value]，保证可重复。
+    # 指定额外基座质量时，沿用 LeggedRobot 的原生实现，但把采样范围收窄为
+    # [value, value]，保证回放可重复。这里特意不受训练随机化范围限制。
     if BASE_MASS_ADDED_KG is not None:
         added_mass_kg = float(BASE_MASS_ADDED_KG)
-        training_min_kg, training_max_kg = (
-            float(value) for value in env_cfg.domain_rand.added_mass_range
-        )
         if not math.isfinite(added_mass_kg):
             raise ValueError("BASE_MASS_ADDED_KG must be a finite number or None")
-        if not training_min_kg <= added_mass_kg <= training_max_kg:
+        nominal_base_mass_kg = nominal_urdf_base_mass_kg(env_cfg)
+        if nominal_base_mass_kg + added_mass_kg <= 0.0:
             raise ValueError(
-                "BASE_MASS_ADDED_KG must stay within the minich_flat training range "
-                f"[{training_min_kg:.1f}, {training_max_kg:.1f}] kg, got {added_mass_kg:.3f} kg"
+                "BASE_MASS_ADDED_KG would make the base mass non-positive: "
+                f"URDF base {nominal_base_mass_kg:.3f} kg, added {added_mass_kg:.3f} kg"
             )
         env_cfg.domain_rand.randomize_base_mass = True
         env_cfg.domain_rand.added_mass_range = [added_mass_kg, added_mass_kg]
+
+    action_scale = float(ACTION_SCALE)
+    if not math.isfinite(action_scale) or action_scale < 0.0:
+        raise ValueError("ACTION_SCALE must be a finite non-negative value in rad per action")
+    env_cfg.control.action_scale = action_scale
 
     # Commands are written directly by the three-phase viewer schedule below.
     # Prevent the environment's periodic resampling from changing them first.
@@ -1055,8 +1079,16 @@ def print_base_mass_setting(env):
     else:
         print(
             f"Viewer base mass: {base_mass_kg:.3f} kg "
-            f"({base_body_name}, URDF + {float(BASE_MASS_ADDED_KG):.3f} kg; fixed replay override)"
+            f"({base_body_name}, URDF {float(BASE_MASS_ADDED_KG):+.3f} kg; fixed replay override)"
         )
+
+
+def print_action_scale_setting(env):
+    """Report the policy-action-to-joint-target scale used by this viewer."""
+    print(
+        f"Viewer action scale: {float(env.cfg.control.action_scale):.3f} rad/action "
+        "(joint target = default joint angle + policy action * scale)"
+    )
 
 
 def install_fixed_reset(env):
@@ -1191,6 +1223,7 @@ def play(args):
     env, _ = task_registry.make_env(name=TASK_NAME, args=args, env_cfg=env_cfg)
     install_fixed_reset(env)
     print_base_mass_setting(env)
+    print_action_scale_setting(env)
 
     # OnPolicyRunner 构造时会调用 env.reset() 并额外执行一帧零动作。先让它
     # 完成模型加载，再恢复固定初始状态并安装统计器，避免那一帧混入起始站立阶段。
