@@ -89,7 +89,7 @@ class MiniChRoughCfg(LeggedRobotCfg):
         # 姿态惩罚：零速/慢速时要求机身保持水平；超过 0.25 m/s 后该项为
         # 0，让快速行走自行选择机身姿态。0.25 的单位是 m/s，不是 0.25 秒；
         # 偏航目标 cmd_yaw 不参与这个门控。
-        orientation_command_threshold = 0.25
+        orientation_command_threshold = 1.2
         # 目标带包含重置高度，因此立即应用：
         # 之前 0.5 s 的自由窗口会让零命令策略在收到任何高度反馈前先下蹲到目标带以下。
         base_height_warmup_s = 0.0
@@ -112,7 +112,7 @@ class MiniChRoughCfg(LeggedRobotCfg):
             # 禁用 minich 的组合碰撞奖励；大腿/小腿会分别记录并加权。
             collision = 0.0
             thigh_collision = -1.0
-            calf_collision = -1.0 / 3.0
+            calf_collision = -1.0
             # 力矩平方和惩罚权重，抑制策略使用过大的关节驱动力矩。
             torques = -0.0002
             # 关节位置超出软限位后的误差惩罚权重。
@@ -120,10 +120,10 @@ class MiniChRoughCfg(LeggedRobotCfg):
             # 抑制左右髋同向内收/外展，避免出现内八站姿。
             hip_symmetry = -5.0
             # 仅在零速度目标下将全身关节拉回初始化 default 站姿。
-            zero_command_default_pose = -10.0
+            zero_command_default_pose = -3.0
             # 目标高度函数在 0.26 m 处返回 +1。结合当前 +0.3 的权重和 20 ms
             # 控制步长，其每步增益约为 +0.006/step。
-            orientation = -1.0
+            orientation = -2.0#姿态项系数
             base_height = 0.3
             # 在低 x/y 命令下，先要求四个足部都支撑，然后把法向力份额逐渐拉向均匀分布。
             low_speed_missing_support_feet = -1.0

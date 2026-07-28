@@ -1160,10 +1160,13 @@ class LeggedRobot(BaseTask):
         self.last_contacts = contact
         first_contact = (self.feet_air_time > 0.) * contact_filt
         self.feet_air_time += self.dt
-        rew_airTime = torch.sum((self.feet_air_time - 0.5) * first_contact, dim=1) # reward only on first contact with the ground
+        rew_airTime = torch.sum((self.feet_air_time - 0.75) * first_contact, dim=1) # reward only on first contact with the ground
         # At zero and very low speed, favor stable support rather than a swing
         # event. Feet-air-time shaping begins only above 0.2 m/s.
-        rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.2
+        # rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.2
+        motion_command = torch.norm(self.commands[:, :2], dim=1) > 0.2
+        turn_command = torch.abs(self.commands[:, 2]) > 0.2
+        rew_airTime *= motion_command | turn_command
         self.feet_air_time *= ~contact_filt
         return rew_airTime
     
