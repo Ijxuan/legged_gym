@@ -54,9 +54,11 @@ ACTION_SCALE = 0.25
 # ===== 回放命令时序：零速站立 -> 前进 -> 零速站立 =====
 # 中间阶段施加的机身前向速度目标，单位 m/s；横移和偏航目标始终为 0。
 FORWARD_SPEED_M_S = 0.5
+TURN_YAW_RATE_RAD_S = 0.5
 # 起始零速度站立、前进和末尾零速度站立各自持续时间，单位 s。
 STAND_BEFORE_S = 6.0
 FORWARD_S = 3
+TURN_S = 3.0
 STAND_AFTER_S = 6.0
 # 是否允许环境在触发接触、倾角、高度或超时早停后调用 reset。
 # False 仅关闭本 viewer 的重置，方便持续观察低蹲/跌倒后的策略输出；不改变训练配置。
@@ -77,7 +79,7 @@ CAMERA_LOOKAT_OFFSET = np.array([0.0, 0.0, 0.2], dtype=np.float64)
 # 仅用于能耗/接触力输出的四腿显示顺序，不改变 URDF、策略动作或关节映射。
 LEG_ORDER = ("FL", "FR", "RL", "RR")
 # 三个阶段的内部标签，供统计和重置日志使用，不是额外的策略输入。
-PHASE_ORDER = ("stand_before", "forward", "stand_after")
+PHASE_ORDER = ("stand_before", "forward", "turn", "stand_after")
 
 # ===== 回放专用 PD 增益：只手动填写一条模板腿 =====
 # 只修改下面这条“模板腿”的 hip / thigh / calf 参数；运行时会原样复制到
@@ -191,10 +193,13 @@ def scheduled_phase(step, env_dt):
     """Return the named phase for one step of the fixed inspection sequence."""
     stand_before_steps = int(round(STAND_BEFORE_S / env_dt))
     forward_end_step = stand_before_steps + int(round(FORWARD_S / env_dt))
+    turn_end_step = forward_end_step + int(round(TURN_S / env_dt))
     if step < stand_before_steps:
         return "stand_before"
     if step < forward_end_step:
         return "forward"
+    if step < turn_end_step:
+        return "turn"
     return "stand_after"
 
 
@@ -973,7 +978,7 @@ class BaseHeightAndSupportMeter:
 
 
 def total_play_steps(env_dt):
-    return int(round((STAND_BEFORE_S + FORWARD_S + STAND_AFTER_S) / env_dt))
+    return int(round((STAND_BEFORE_S + FORWARD_S + TURN_S + STAND_AFTER_S) / env_dt))
 
 
 def nominal_urdf_base_mass_kg(env_cfg):
@@ -1033,25 +1038,26 @@ def configure_flat_sequence_env(env_cfg):
     env_cfg.commands.curriculum = False
     env_cfg.commands.heading_command = False
     env_cfg.commands.zero_command_probability = 0.0
-    env_cfg.commands.resampling_time = STAND_BEFORE_S + FORWARD_S + STAND_AFTER_S + 1.0
+    env_cfg.commands.resampling_time = STAND_BEFORE_S + FORWARD_S + TURN_S + STAND_AFTER_S + 1.0
     env_cfg.commands.ranges.lin_vel_x = [0.0, 0.0]
     env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
     env_cfg.commands.ranges.ang_vel_yaw = [0.0, 0.0]
 
 
-def set_command(env, forward_speed):
-    """Write a forward-only target: vx is requested speed; vy and yaw are zero."""
+def set_command(env, command):
+    """Write one direct [vx, vy, yaw_rate] command to all viewer envs."""
     env.commands.zero_()
-    env.commands[:, 0] = forward_speed
+    env.commands[:, :3] = torch.as_tensor(command, device=env.device, dtype=env.commands.dtype)
 
 
-def scheduled_forward_speed(step, env_dt):
-    """Return zero -> 1 m/s -> zero command for one inspection sequence."""
-    stand_before_steps = int(round(STAND_BEFORE_S / env_dt))
-    forward_end_step = stand_before_steps + int(round(FORWARD_S / env_dt))
-    if stand_before_steps <= step < forward_end_step:
-        return FORWARD_SPEED_M_S
-    return 0.0
+def scheduled_command(step, env_dt):
+    """Return [vx, vy, yaw_rate] for one inspection-sequence step."""
+    phase = scheduled_phase(step, env_dt)
+    if phase == "forward":
+        return (FORWARD_SPEED_M_S, 0.0, 0.0)
+    if phase == "turn":
+        return (0.0, 0.0, TURN_YAW_RATE_RAD_S)
+    return (0.0, 0.0, 0.0)
 
 
 def aim_camera_at_robot(env):
@@ -1173,7 +1179,7 @@ def reset_to_fixed_state(env):
     """Apply the fixed reset once after construction, then rebuild its observation."""
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
     env.reset_idx(env_ids)
-    set_command(env, 0.0)
+    set_command(env, (0.0, 0.0, 0.0))
     env.actions.zero_()
     env.last_actions.zero_()
     env.last_dof_vel.zero_()
@@ -1253,6 +1259,7 @@ def play(args):
         f"Flat command sequence viewer: task={TASK_NAME}, run={LOAD_RUN}, "
         f"checkpoint={CHECKPOINT}, stand={STAND_BEFORE_S:.1f}s -> "
         f"vx={FORWARD_SPEED_M_S:.1f} m/s for {FORWARD_S:.1f}s -> "
+        f"yaw={TURN_YAW_RATE_RAD_S:.1f} rad/s for {TURN_S:.1f}s -> "
         f"stand={STAND_AFTER_S:.1f}s, obs_shape={tuple(obs.shape)}, "
         f"termination_reset={'on' if ENABLE_TERMINATION_RESET else 'off'}"
     )
@@ -1277,7 +1284,7 @@ def play(args):
         constraint_meter.set_phase(phase)
         reward_meter.set_phase(phase)
         termination_meter.set_context(i, env.dt, phase)
-        set_command(env, scheduled_forward_speed(i, env.dt))
+        set_command(env, scheduled_command(i, env.dt))
         env.compute_observations()
         obs = env.get_observations()
         actions = policy(obs.detach())
