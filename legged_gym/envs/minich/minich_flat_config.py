@@ -68,6 +68,48 @@ class MiniChFlatCfg(MiniChRoughCfg):
         randomize_action_delay = True
         action_delay_sim_steps = [0, 2]
 
+    class rewards(MiniChRoughCfg.rewards):
+        class scales(MiniChRoughCfg.rewards.scales):
+            termination = -0.0  # 终止惩罚
+            tracking_lin_vel = 1.0  # 线速度跟踪
+            tracking_ang_vel = 1.0  # 角速度跟踪
+            lin_vel_z = -2.0  # 竖直速度惩罚
+            ang_vel_xy = -0.05  # 横滚/俯仰角速度惩罚
+            orientation = -2.0  # 低速姿态对齐
+            torques = -0.0002  # 关节力矩惩罚
+            dof_vel = -0.0  # 关节速度惩罚
+            dof_acc = -2.5e-7  # 关节加速度惩罚
+            action_rate = -0.01  # 动作变化率惩罚
+            base_height = 0.3  # 机身高度奖励
+            feet_air_time = 1.0  # 腾空时间奖励
+            collision = 0.0  # 通用碰撞惩罚
+            thigh_collision = -1.0  # 大腿碰撞惩罚
+            calf_collision = -1.0  # 小腿碰撞惩罚
+            feet_stumble = -0.0  # 绊倒惩罚
+            stand_still = -0.0  # 低速站立关节偏移惩罚
+            feet_contact_forces = -0.0  # 足端接触力过大惩罚
+            dof_pos_limits = -10.0  # 关节位置限制惩罚
+            dof_vel_limits = -0.0  # 关节速度限制惩罚
+            torque_limits = -0.0  # 力矩限制惩罚
+            hip_symmetry = -5.0  # 左右髋关节对称惩罚
+            zero_command_default_pose = -3.0  # 零命令默认站姿惩罚
+            low_speed_missing_support_feet = -1.0  # 低速缺支撑足惩罚
+            low_speed_load_balance = -5.0  # 低速四足载荷均衡惩罚
+            joint_power = 0.0  # 未实现
+            foot_clearance = 0.0  # 未实现
+            smoothness = 0.0  # 未实现
+
+        # 说明：
+        # - 这里是 minich_flat 平地训练专用奖励权重；写在这里会覆盖
+        #   MiniChRoughCfg 继承来的同名权重，但不会修改 rough 任务。
+        # - 权重为 0.0 或 -0.0 的项会在 LeggedRobot._prepare_reward_function()
+        #   中被移除，不会参与训练，也不会要求存在对应奖励函数。
+        # - joint_power、foot_clearance、smoothness 目前没有对应的
+        #   _reward_joint_power/_reward_foot_clearance/_reward_smoothness 函数，
+        #   所以只能保持 0.0；如果改成非零，启动环境时会报错。
+        # - orientation 只在 ||cmd_xy|| <= orientation_command_threshold 时生效；
+        #   原地旋转时 cmd_xy 为 0，因此姿态惩罚仍会生效。
+
 
 class MiniChFlatCfgPPO(MiniChRoughCfgPPO):
     class runner(MiniChRoughCfgPPO.runner):
