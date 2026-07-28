@@ -66,7 +66,7 @@ class MiniChFlatCfg(MiniChRoughCfg):
         kp_scale_range = [0.6, 1.0]
         kd_scale_range = [0.6, 1.0]
         randomize_action_delay = True
-        action_delay_sim_steps = [0, 3]
+        action_delay_sim_steps = [0, 2]
 
 
 class MiniChFlatCfgPPO(MiniChRoughCfgPPO):

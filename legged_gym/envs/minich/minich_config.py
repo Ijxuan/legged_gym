@@ -108,6 +108,7 @@ class MiniChRoughCfg(LeggedRobotCfg):
         feet_air_time_low_speed_command_threshold = 0.2
 
         class scales(LeggedRobotCfg.rewards.scales):
+            tracking_ang_vel = 1.0
             # 禁用 minich 的组合碰撞奖励；大腿/小腿会分别记录并加权。
             collision = 0.0
             thigh_collision = -1.0
@@ -125,8 +126,8 @@ class MiniChRoughCfg(LeggedRobotCfg):
             orientation = -1.0
             base_height = 0.3
             # 在低 x/y 命令下，先要求四个足部都支撑，然后把法向力份额逐渐拉向均匀分布。
-            low_speed_missing_support_feet = 0.0
-            low_speed_load_balance = 0.0
+            low_speed_missing_support_feet = -1.0
+            low_speed_load_balance = -5.0
 
 
 class MiniChRoughCfgPPO(LeggedRobotCfgPPO):

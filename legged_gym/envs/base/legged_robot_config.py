@@ -129,7 +129,7 @@ class LeggedRobotCfg(BaseConfig):
 
     class domain_rand:
         randomize_friction = True
-        friction_range = [0.5, 1.25]
+        friction_range = [1.0, 1.5]
         randomize_base_mass = False
         added_mass_range = [-1., 7.]
         push_robots = True
