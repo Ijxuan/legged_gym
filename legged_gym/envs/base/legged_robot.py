@@ -110,6 +110,8 @@ class LeggedRobot(BaseTask):
         """
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
+        if self._needs_rigid_body_state:
+            self.gym.refresh_rigid_body_state_tensor(self.sim)
 
         self.episode_length_buf += 1
         self.common_step_counter += 1
@@ -189,6 +191,8 @@ class LeggedRobot(BaseTask):
         self.last_dof_vel[env_ids] = 0.
         self.feet_air_time[env_ids] = 0.
         self.zero_command_elapsed[env_ids] = 0.
+        self.foot_clearance_max[env_ids] = 0.
+        self.foot_clearance_elapsed[env_ids] = 0.
         self._reset_actuator_domain_randomization(env_ids)
         self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
@@ -584,9 +588,12 @@ class LeggedRobot(BaseTask):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
+        if self._needs_rigid_body_state:
+            self.gym.refresh_rigid_body_state_tensor(self.sim)
 
         # create some wrapper tensors for different slices
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
@@ -596,6 +603,7 @@ class LeggedRobot(BaseTask):
         self.base_quat = self.root_states[:, 3:7]
 
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state).view(self.num_envs, self.num_bodies, 13)
 
         # initialize some data used later on
         self.common_step_counter = 0
@@ -616,6 +624,8 @@ class LeggedRobot(BaseTask):
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
+        self.foot_clearance_max = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.float, device=self.device, requires_grad=False)
+        self.foot_clearance_elapsed = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
@@ -891,6 +901,7 @@ class LeggedRobot(BaseTask):
         self.dt = self.cfg.control.decimation * self.sim_params.dt
         self.obs_scales = self.cfg.normalization.obs_scales
         self.reward_scales = class_to_dict(self.cfg.rewards.scales)
+        self._needs_rigid_body_state = self.reward_scales.get("foot_clearance", 0.) != 0.
         self.command_ranges = class_to_dict(self.cfg.commands.ranges)
         if self.cfg.terrain.mesh_type not in ['heightfield', 'trimesh']:
             self.cfg.terrain.curriculum = False
@@ -1094,6 +1105,33 @@ class LeggedRobot(BaseTask):
         """Return non-negative world-up force for every configured foot."""
         return torch.clamp(self.contact_forces[:, self.feet_indices, 2], min=0.0)
 
+    def _foot_terrain_heights(self, foot_positions):
+        """Return local terrain height under each foot position."""
+        foot_z = foot_positions[:, :, 2]
+        terrain_cfg = getattr(self.cfg, "terrain", None)
+        mesh_type = getattr(terrain_cfg, "mesh_type", "plane")
+        if mesh_type == "plane" or self.height_samples is None:
+            env_origins = getattr(self, "env_origins", None)
+            if env_origins is None:
+                return torch.zeros_like(foot_z)
+            return env_origins[:, 2].unsqueeze(1).expand_as(foot_z)
+        if mesh_type == "none":
+            return torch.zeros_like(foot_z)
+
+        points = foot_positions[:, :, :2] + self.terrain.cfg.border_size
+        px = torch.clip(
+            (points[:, :, 0] / self.terrain.cfg.horizontal_scale).long(),
+            0, self.height_samples.shape[0] - 2,
+        )
+        py = torch.clip(
+            (points[:, :, 1] / self.terrain.cfg.horizontal_scale).long(),
+            0, self.height_samples.shape[1] - 2,
+        )
+        heights1 = self.height_samples[px, py]
+        heights2 = self.height_samples[px + 1, py]
+        heights3 = self.height_samples[px, py + 1]
+        return torch.min(torch.min(heights1, heights2), heights3) * self.terrain.cfg.vertical_scale
+
     def _low_speed_support_mask(self):
         """Gate order-free support shaping to settled low-speed commands.
 
@@ -1135,6 +1173,65 @@ class LeggedRobot(BaseTask):
         target_share = 1.0 / normal_forces.shape[1]
         imbalance = torch.sum(torch.square(load_share - target_share), dim=1)
         return imbalance * full_support * self._low_speed_support_mask()
+
+    def _reward_foot_clearance(self):
+        """只在转向时奖励本周期内四足都达到目标足底离地高度。"""
+        # 读取四个 foot 刚体的世界坐标。rigid_body_states 的每个刚体状态为
+        # [pos(3), quat(4), lin_vel(3), ang_vel(3)]，所以 0:3 是位置。
+        foot_states = self.rigid_body_states[:, self.feet_indices, :]
+        foot_positions = foot_states[:, :, :3]
+
+        # 足端抬腿高度按“足底相对地形高度”计算，而不是 foot 刚体原点高度。
+        # Mini Cheetah foot 是半径 0.02 m 的球，所以足底高度 =
+        # foot 原点高度 - 地形高度 - 半径。目标足底抬高 0.04 m 时，
+        # 对应的 foot 原点目标高度就是 0.06 m。
+        current_clearance = torch.clamp(
+            foot_positions[:, :, 2]
+            - self._foot_terrain_heights(foot_positions)
+            - self.cfg.rewards.foot_clearance_foot_radius,
+            min=0.0,
+        )
+
+        # 命令门控：只看转向命令。abs(cmd_yaw) > 0.2 时生效；
+        # 纯前进、纯后退和零速都不会拿 foot_clearance 奖励。
+        command_threshold = self.cfg.rewards.foot_clearance_command_threshold
+        turn_command = torch.abs(self.commands[:, 2]) > command_threshold
+
+        # 状态型统计：在当前转向周期内，每条腿记录自己的最大足底离地高度。
+        # 然后取四条腿 max_clearance 的最小值评分。只要有一条腿在本周期
+        # 没抬起来，它的 max_clearance 就低，整体奖励也会被拉低。
+        self.foot_clearance_elapsed[turn_command] += self.dt
+        self.foot_clearance_elapsed[~turn_command] = 0.
+        self.foot_clearance_max[~turn_command] = 0.
+        if torch.any(turn_command):
+            self.foot_clearance_max[turn_command] = torch.maximum(
+                self.foot_clearance_max[turn_command],
+                current_clearance[turn_command],
+            )
+
+        min_max_clearance = torch.min(self.foot_clearance_max, dim=1).values
+
+        # 高度得分是三角形奖励：foot_clearance_target 处为 1，偏离
+        # foot_clearance_tolerance 以后降到 0。当前 Mini Cheetah 配置为
+        # 0.04 m 最优，0.00 m 和 0.08 m 处为 0。
+        height_error = torch.abs(min_max_clearance - self.cfg.rewards.foot_clearance_target)
+        clearance_reward = torch.clamp(
+            1.0 - height_error / self.cfg.rewards.foot_clearance_tolerance,
+            min=0.0,
+            max=1.0,
+        )
+        reward = clearance_reward * turn_command
+
+        # 每个周期重新开始统计。重置后用当前帧 clearance 作为下一周期初值，
+        # 避免周期边界那一帧被丢掉。
+        period_complete = turn_command & (
+            self.foot_clearance_elapsed >= self.cfg.rewards.foot_clearance_period_s
+        )
+        if torch.any(period_complete):
+            self.foot_clearance_elapsed[period_complete] = 0.
+            self.foot_clearance_max[period_complete] = current_clearance[period_complete]
+
+        return reward
 
     def _reward_feet_air_time(self):
         # Reward long steps

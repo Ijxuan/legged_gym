@@ -96,7 +96,7 @@ class MiniChFlatCfg(MiniChRoughCfg):
             low_speed_missing_support_feet = -1.0  # 低速缺支撑足惩罚
             low_speed_load_balance = -5.0  # 低速四足载荷均衡惩罚
             joint_power = 0.0  # 未实现
-            foot_clearance = 0.0  # 未实现
+            foot_clearance = 0.5  # 转向时的四足周期最大抬腿高度奖励
             smoothness = 0.0  # 未实现
 
         # 说明：
@@ -104,9 +104,13 @@ class MiniChFlatCfg(MiniChRoughCfg):
         #   MiniChRoughCfg 继承来的同名权重，但不会修改 rough 任务。
         # - 权重为 0.0 或 -0.0 的项会在 LeggedRobot._prepare_reward_function()
         #   中被移除，不会参与训练，也不会要求存在对应奖励函数。
-        # - joint_power、foot_clearance、smoothness 目前没有对应的
-        #   _reward_joint_power/_reward_foot_clearance/_reward_smoothness 函数，
-        #   所以只能保持 0.0；如果改成非零，启动环境时会报错。
+        # - joint_power、smoothness 目前没有对应的
+        #   _reward_joint_power/_reward_smoothness 函数，所以只能保持 0.0；
+        #   如果改成非零，启动环境时会报错。
+        # - foot_clearance 已实现；原始值为 0~1，当前 0.5 权重对应最高约
+        #   +0.01/step。它只在 |cmd_yaw| > 0.2 时启用，每 1.0 s 统计
+        #   每条腿的最大足底离地高度，再取四条腿 max 的最小值评分；
+        #   纯前进、纯后退和零速都不会拿这个奖励。
         # - orientation 只在 ||cmd_xy|| <= orientation_command_threshold 时生效；
         #   原地旋转时 cmd_xy 为 0，因此姿态惩罚仍会生效。
 

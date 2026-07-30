@@ -106,6 +106,15 @@ class MiniChRoughCfg(LeggedRobotCfg):
         feet_air_time_contact_force_threshold = 1.0
         feet_air_time_low_speed_contact_force_threshold = 10.0
         feet_air_time_low_speed_command_threshold = 0.2
+        # foot_clearance 只在转向时奖励四足本周期最大足底离地高度都接近目标值：
+        # |cmd_yaw| > 0.2 生效；纯前进、纯后退和零速都不生效。
+        # 目标值按足底相对地面的高度计算；foot 球半径 0.02 m，所以目标
+        # 足底抬高 0.04 m 对应 foot 原点高度 0.06 m。
+        foot_clearance_target = 0.04
+        foot_clearance_tolerance = 0.04
+        foot_clearance_foot_radius = 0.02
+        foot_clearance_command_threshold = 0.2
+        foot_clearance_period_s = 1.0
 
         class scales(LeggedRobotCfg.rewards.scales):
             tracking_ang_vel = 1.0

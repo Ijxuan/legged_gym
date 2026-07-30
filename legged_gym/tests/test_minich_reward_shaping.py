@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import math
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 import unittest
 
 import isaacgym
@@ -214,7 +214,7 @@ class TestMiniChRewardShaping(unittest.TestCase):
 
         reward = LeggedRobot._reward_feet_air_time(robot)
 
-        self.assertTrue(torch.allclose(reward, torch.tensor([0.0, 0.48, 0.0, 0.0, 0.0, 0.48])))
+        self.assertTrue(torch.allclose(reward, torch.tensor([0.0, -0.52, 0.0, 0.0, 0.0, -0.52])))
         self.assertTrue(torch.equal(robot.last_contacts[0], torch.zeros(4, dtype=torch.bool)))
         self.assertTrue(torch.equal(robot.last_contacts[1], torch.ones(4, dtype=torch.bool)))
         self.assertTrue(torch.equal(robot.last_contacts[2], torch.zeros(4, dtype=torch.bool)))
@@ -253,6 +253,55 @@ class TestMiniChRewardShaping(unittest.TestCase):
 
         self.assertTrue(torch.allclose(missing_support, torch.tensor([0.0, 1.0, 0.0, 0.0])))
         self.assertTrue(torch.allclose(load_balance, torch.tensor([0.0, 0.0, 0.03, 0.0])))
+
+    def test_foot_clearance_tracks_turning_max_clearance_by_leg(self):
+        rigid_body_states = torch.zeros(6, 4, 13)
+        rigid_body_states[:, :, 2] = 0.02
+        # Foot radius is 0.02 m. A foot-origin height of 0.06 m therefore
+        # corresponds to the requested 0.04 m sole clearance.
+        rigid_body_states[0, :, 2] = 0.06
+        foot_clearance_max = torch.zeros(6, 4)
+        foot_clearance_max[1] = torch.tensor([0.02, 0.04, 0.04, 0.04])
+        foot_clearance_max[2] = torch.tensor([0.04, 0.04, 0.00, 0.04])
+        foot_clearance_max[3:] = 0.04
+        robot = SimpleNamespace(
+            num_envs=6,
+            device="cpu",
+            rigid_body_states=rigid_body_states,
+            feet_indices=torch.tensor([0, 1, 2, 3]),
+            env_origins=torch.zeros(6, 3),
+            height_samples=None,
+            foot_clearance_max=foot_clearance_max,
+            foot_clearance_elapsed=torch.tensor([0.98, 0.50, 0.50, 0.50, 0.50, 0.50]),
+            dt=0.02,
+            commands=torch.tensor([
+                [0.0, 0.0, 0.3],
+                [0.0, 0.0, -0.3],
+                [0.0, 0.0, 0.3],
+                [-0.3, 0.0, 0.0],
+                [0.3, 0.0, 0.0],
+                [-0.2, 0.0, 0.2],
+            ]),
+            cfg=SimpleNamespace(
+                terrain=SimpleNamespace(mesh_type="plane"),
+                rewards=SimpleNamespace(
+                    foot_clearance_target=0.04,
+                    foot_clearance_tolerance=0.04,
+                    foot_clearance_foot_radius=0.02,
+                    foot_clearance_command_threshold=0.2,
+                    foot_clearance_period_s=1.0,
+                ),
+            ),
+        )
+        robot._foot_terrain_heights = MethodType(LeggedRobot._foot_terrain_heights, robot)
+
+        reward = LeggedRobot._reward_foot_clearance(robot)
+
+        self.assertTrue(torch.allclose(reward, torch.tensor([1.0, 0.5, 0.0, 0.0, 0.0, 0.0])))
+        self.assertTrue(torch.allclose(robot.foot_clearance_max[0], torch.full((4,), 0.04)))
+        self.assertEqual(robot.foot_clearance_elapsed[0].item(), 0.0)
+        self.assertTrue(torch.equal(robot.foot_clearance_max[3:], torch.zeros(3, 4)))
+        self.assertTrue(torch.equal(robot.foot_clearance_elapsed[3:], torch.zeros(3)))
 
     def test_zero_command_elapsed_tracks_only_an_uninterrupted_stand(self):
         robot = SimpleNamespace(
@@ -388,20 +437,25 @@ class TestMiniChRewardShaping(unittest.TestCase):
             (("FL_hip_joint", "FR_hip_joint"), ("RL_hip_joint", "RR_hip_joint")),
         )
         self.assertEqual(MiniChRoughCfg.rewards.scales.hip_symmetry, -5.0)
-        self.assertEqual(MiniChRoughCfg.rewards.scales.zero_command_default_pose, -10.0)
-        self.assertEqual(MiniChRoughCfg.rewards.scales.orientation, -1.0)
+        self.assertEqual(MiniChRoughCfg.rewards.scales.zero_command_default_pose, -3.0)
+        self.assertEqual(MiniChRoughCfg.rewards.scales.orientation, -2.0)
         self.assertEqual(MiniChRoughCfg.rewards.scales.base_height, 0.3)
         self.assertIsNone(MiniChRoughCfg.rewards.base_height_min)
         self.assertEqual(MiniChRoughCfg.rewards.base_height_target, 0.26)
         self.assertEqual(MiniChRoughCfg.rewards.base_height_reward_drop_height, 0.04)
         self.assertEqual(MiniChRoughCfg.rewards.scales.low_speed_missing_support_feet, -1.0)
-        self.assertEqual(MiniChRoughCfg.rewards.scales.low_speed_load_balance, -1.0)
-        self.assertEqual(MiniChRoughCfg.rewards.orientation_command_threshold, 0.25)
+        self.assertEqual(MiniChRoughCfg.rewards.scales.low_speed_load_balance, -5.0)
+        self.assertEqual(MiniChRoughCfg.rewards.orientation_command_threshold, 1.2)
         self.assertEqual(MiniChRoughCfg.rewards.base_height_warmup_s, 0.0)
         self.assertEqual(MiniChRoughCfg.rewards.foot_contact_force_threshold, 10.0)
         self.assertEqual(MiniChRoughCfg.rewards.feet_air_time_contact_force_threshold, 1.0)
         self.assertEqual(MiniChRoughCfg.rewards.feet_air_time_low_speed_contact_force_threshold, 10.0)
         self.assertEqual(MiniChRoughCfg.rewards.feet_air_time_low_speed_command_threshold, 0.2)
+        self.assertEqual(MiniChRoughCfg.rewards.foot_clearance_target, 0.04)
+        self.assertEqual(MiniChRoughCfg.rewards.foot_clearance_tolerance, 0.04)
+        self.assertEqual(MiniChRoughCfg.rewards.foot_clearance_foot_radius, 0.02)
+        self.assertEqual(MiniChRoughCfg.rewards.foot_clearance_command_threshold, 0.2)
+        self.assertEqual(MiniChRoughCfg.rewards.foot_clearance_period_s, 1.0)
         self.assertEqual(MiniChRoughCfg.rewards.low_speed_support_command_threshold, 0.25)
         self.assertEqual(MiniChRoughCfg.rewards.low_speed_support_warmup_s, 0.5)
         self.assertEqual(MiniChRoughCfg.rewards.low_speed_support_zero_command_delay_s, 1.0)

@@ -163,6 +163,7 @@ class LeggedRobotCfg(BaseConfig):
             feet_stumble = -0.0 
             action_rate = -0.01
             stand_still = -0.
+            foot_clearance = 0.
             # Low-speed foot-support shaping is opt-in for robot tasks.
             low_speed_missing_support_feet = -0.
             low_speed_load_balance = -0.
@@ -200,6 +201,14 @@ class LeggedRobotCfg(BaseConfig):
         feet_air_time_contact_force_threshold = 1.
         feet_air_time_low_speed_contact_force_threshold = None
         feet_air_time_low_speed_command_threshold = 0.
+        # 足端抬腿高度正奖励：只在 |cmd_yaw| > 阈值时启用。每条腿记录
+        # foot_clearance_period_s 周期内的最大足底离地高度，再取四条腿
+        # max_clearance 的最小值评分；只要有一条腿没抬起来，奖励就低。
+        foot_clearance_target = 0.04
+        foot_clearance_tolerance = 0.04
+        foot_clearance_foot_radius = 0.02
+        foot_clearance_command_threshold = 0.2
+        foot_clearance_period_s = 1.0
         # Low-speed support rewards use their own command gate so changing an
         # orientation threshold does not silently change support behavior.
         low_speed_support_command_threshold = 0.

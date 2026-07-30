@@ -42,7 +42,7 @@ class TestMiniChFlatConfig(unittest.TestCase):
         self.assertEqual(MiniChFlatCfg.commands.ranges.lin_vel_y, [-1.0, 1.0])
         self.assertEqual(MiniChFlatCfg.commands.ranges.ang_vel_yaw, [-1, 1])
         self.assertEqual(MiniChFlatCfg.commands.resampling_time, 5.0)
-        self.assertEqual(MiniChFlatCfg.commands.zero_command_probability, 0.30)
+        self.assertEqual(MiniChFlatCfg.commands.zero_command_probability, 0.10)
 
     def test_flat_task_keeps_domain_randomization_and_starts_fresh(self):
         self.assertTrue(MiniChFlatCfg.domain_rand.randomize_friction)
@@ -54,7 +54,7 @@ class TestMiniChFlatConfig(unittest.TestCase):
         self.assertEqual(MiniChFlatCfg.domain_rand.kp_scale_range, [0.6, 1.0])
         self.assertEqual(MiniChFlatCfg.domain_rand.kd_scale_range, [0.6, 1.0])
         self.assertTrue(MiniChFlatCfg.domain_rand.randomize_action_delay)
-        self.assertEqual(MiniChFlatCfg.domain_rand.action_delay_sim_steps, [0, 3])
+        self.assertEqual(MiniChFlatCfg.domain_rand.action_delay_sim_steps, [0, 2])
         self.assertEqual(
             MiniChFlatCfg.domain_rand.thigh_link_length_range_m,
             MINI_CHEETAH_THIGH_LINK_LENGTH_RANGE_M,
@@ -69,7 +69,7 @@ class TestMiniChFlatConfig(unittest.TestCase):
         )
         self.assertEqual(MiniChFlatCfg.control.action_scale, 0.25)
         self.assertEqual(MiniChFlatCfg.rewards.scales.hip_symmetry, -5.0)
-        self.assertEqual(MiniChFlatCfg.rewards.scales.zero_command_default_pose, -10.0)
+        self.assertEqual(MiniChFlatCfg.rewards.scales.zero_command_default_pose, -3.0)
         self.assertEqual(MiniChFlatCfg.rewards.base_height_target, 0.26)
         self.assertEqual(MiniChFlatCfg.rewards.base_height_reward_drop_height, 0.04)
         self.assertEqual(MiniChFlatCfg.rewards.scales.base_height, 0.3)
@@ -78,7 +78,13 @@ class TestMiniChFlatConfig(unittest.TestCase):
         self.assertEqual(MiniChFlatCfg.rewards.low_speed_support_warmup_s, 0.5)
         self.assertEqual(MiniChFlatCfg.rewards.low_speed_support_zero_command_delay_s, 1.0)
         self.assertEqual(MiniChFlatCfg.rewards.scales.low_speed_missing_support_feet, -1.0)
-        self.assertEqual(MiniChFlatCfg.rewards.scales.low_speed_load_balance, -1.0)
+        self.assertEqual(MiniChFlatCfg.rewards.scales.low_speed_load_balance, -5.0)
+        self.assertEqual(MiniChFlatCfg.rewards.scales.foot_clearance, 0.5)
+        self.assertEqual(MiniChFlatCfg.rewards.foot_clearance_target, 0.04)
+        self.assertEqual(MiniChFlatCfg.rewards.foot_clearance_tolerance, 0.04)
+        self.assertEqual(MiniChFlatCfg.rewards.foot_clearance_foot_radius, 0.02)
+        self.assertEqual(MiniChFlatCfg.rewards.foot_clearance_command_threshold, 0.2)
+        self.assertEqual(MiniChFlatCfg.rewards.foot_clearance_period_s, 1.0)
         self.assertEqual(MiniChFlatCfgPPO.runner.experiment_name, "flat_minich")
         self.assertFalse(MiniChFlatCfgPPO.runner.resume)
         self.assertEqual(MiniChFlatCfgPPO.runner.jit_export_interval, 1000)

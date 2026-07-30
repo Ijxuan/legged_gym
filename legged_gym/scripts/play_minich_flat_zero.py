@@ -38,9 +38,9 @@ TASK_NAME = "minich_flat"
 # # 上述 run 中加载的 model_<轮数>.pt；改为 -1 才表示该 run 中最新的模型。
 # CHECKPOINT = 2050
 # logs/flat_minich/ 下的训练 run 文件夹名；脚本不会自动选择最新 run。
-LOAD_RUN = "Jul24_12-45-55_flat_48obs_2048x4000"
+LOAD_RUN = "Jul30_11-30-31_flat_48obs_4096x4000"
 # 上述 run 中加载的 model_<轮数>.pt；改为 -1 才表示该 run 中最新的模型。
-CHECKPOINT = 2200
+CHECKPOINT = 4000
 # 策略输入维度。平地策略固定为 48：速度(6)、重力投影(3)、命令(3)、
 # 关节位置/速度(24)和上一帧动作(12)。它必须与 checkpoint 的网络输入一致。
 OBSERVATION_DIM = 48
@@ -53,12 +53,12 @@ ACTION_SCALE = 0.25
 
 # ===== 回放命令时序：零速站立 -> 前进 -> 零速站立 =====
 # 中间阶段施加的机身前向速度目标，单位 m/s；横移和偏航目标始终为 0。
-FORWARD_SPEED_M_S = 0.5
-TURN_YAW_RATE_RAD_S = 0.5
+FORWARD_SPEED_M_S = -0.5
+TURN_YAW_RATE_RAD_S = -0.5
 # 起始零速度站立、前进和末尾零速度站立各自持续时间，单位 s。
-STAND_BEFORE_S = 6.0
-FORWARD_S = 3
-TURN_S = 3.0
+STAND_BEFORE_S = 3.0
+FORWARD_S = 0
+TURN_S = 16.0
 STAND_AFTER_S = 6.0
 # 是否允许环境在触发接触、倾角、高度或超时早停后调用 reset。
 # False 仅关闭本 viewer 的重置，方便持续观察低蹲/跌倒后的策略输出；不改变训练配置。
