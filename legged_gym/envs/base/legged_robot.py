@@ -1142,6 +1142,11 @@ class LeggedRobot(BaseTask):
         low_speed = torch.norm(self.commands[:, :2], dim=1) <= self.cfg.rewards.low_speed_support_command_threshold
         settled = self.episode_length_buf * self.dt >= self.cfg.rewards.low_speed_support_warmup_s
         support_mask = low_speed & settled
+        yaw_threshold = getattr(
+            self.cfg.rewards, "low_speed_support_yaw_command_threshold", None
+        )
+        if yaw_threshold is not None:
+            support_mask &= torch.abs(self.commands[:, 2]) <= yaw_threshold
 
         zero_command_delay_s = getattr(
             self.cfg.rewards, "low_speed_support_zero_command_delay_s", 0.0

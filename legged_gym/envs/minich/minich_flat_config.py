@@ -69,6 +69,8 @@ class MiniChFlatCfg(MiniChRoughCfg):
         action_delay_sim_steps = [0, 2]
 
     class rewards(MiniChRoughCfg.rewards):
+        low_speed_support_yaw_command_threshold = 0.1
+
         class scales(MiniChRoughCfg.rewards.scales):
             termination = -0.0  # 终止惩罚
             tracking_lin_vel = 1.0  # 线速度跟踪
