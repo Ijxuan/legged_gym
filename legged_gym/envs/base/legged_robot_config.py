@@ -212,8 +212,8 @@ class LeggedRobotCfg(BaseConfig):
         # Raibert-style foot placement heuristic. The raw term is a squared
         # foothold-position error, so tasks typically use a negative scale.
         raibert_heuristic = 0.
-        raibert_stance_width = 0.30
-        raibert_stance_length = 0.45
+        raibert_stance_width = 0.25
+        raibert_stance_length = 0.38
         # Fixed velocity-prediction horizon for the phase-free foothold plan.
         raibert_foot_placement_time = 0.20
         # Low-speed support rewards use their own command gate so changing an

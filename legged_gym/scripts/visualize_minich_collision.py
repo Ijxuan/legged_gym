@@ -15,14 +15,30 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import isaacgym  # noqa: F401: Isaac Gym must be imported before legged_gym.
+from isaacgym import gymtorch
+from isaacgym.torch_utils import quat_conjugate
+import torch
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs import *  # noqa: F401,F403: registers the minich task.
 from legged_gym.utils import get_args, task_registry
+from legged_gym.utils.math import quat_apply_yaw
 
 
 URDF_PATH = Path(LEGGED_GYM_ROOT_DIR) / "resources/robots/mini_cheetah/urdf/mini_cheetah.urdf"
 COLLISION_MESH = "meshes/mini_calf_collision.STL"
+FOOT_LABELS = ("FL", "FR", "RL", "RR")
+TEMPLATE_LEG_JOINTS = ("hip", "thigh", "calf")
+TEMPLATE_LEG_KP = {
+    "hip": 17.0,
+    "thigh": 17.0,
+    "calf": 34.0,
+}
+TEMPLATE_LEG_KD = {
+    "hip": 0.4,
+    "thigh": 0.4,
+    "calf": 0.5,
+}
 
 
 def _parse_vector(value, length, name):
@@ -127,12 +143,105 @@ def _parse_preview_options():
     parser.add_argument(
         "--base-height",
         type=float,
-        default=2.75,
+        default=0.27,
         help="Height of the fixed robot base above the plane in meters.",
     )
     preview_args, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0], *remaining]
     return preview_args
+
+
+def _ordered_foot_indices(env):
+    if hasattr(env, "foot_order_indices") and env.foot_order_indices.numel() == 4:
+        return env.foot_order_indices, FOOT_LABELS
+    labels = tuple(f"foot_{index}" for index in range(len(env.feet_indices)))
+    return env.feet_indices, labels
+
+
+def apply_shared_leg_pd_gains(env):
+    """Use the same manually synchronized PD gains as play_minich_flat_zero.py."""
+    dof_indices = {name: index for index, name in enumerate(env.dof_names)}
+    expected_joint_names = [
+        f"{leg}_{joint}_joint" for leg in FOOT_LABELS for joint in TEMPLATE_LEG_JOINTS
+    ]
+    missing_joint_names = [name for name in expected_joint_names if name not in dof_indices]
+    unexpected_joint_names = [name for name in env.dof_names if name not in expected_joint_names]
+    if missing_joint_names or unexpected_joint_names:
+        raise ValueError(
+            "cannot apply Mini Cheetah PD gains; "
+            f"missing={missing_joint_names}, unexpected={unexpected_joint_names}"
+        )
+
+    template_kp = torch.tensor(
+        [TEMPLATE_LEG_KP[joint] for joint in TEMPLATE_LEG_JOINTS], device=env.device
+    )
+    template_kd = torch.tensor(
+        [TEMPLATE_LEG_KD[joint] for joint in TEMPLATE_LEG_JOINTS], device=env.device
+    )
+    for leg in FOOT_LABELS:
+        indices = torch.tensor(
+            [dof_indices[f"{leg}_{joint}_joint"] for joint in TEMPLATE_LEG_JOINTS],
+            dtype=torch.long,
+            device=env.device,
+        )
+        env.p_gains[indices] = template_kp
+        env.d_gains[indices] = template_kd
+
+    print(
+        "PD gains copied from deployment viewer: "
+        + ", ".join(
+            f"{joint}(Kp={TEMPLATE_LEG_KP[joint]:g}, Kd={TEMPLATE_LEG_KD[joint]:g})"
+            for joint in TEMPLATE_LEG_JOINTS
+        )
+    )
+
+
+@torch.no_grad()
+def set_default_standing_pose(env):
+    """Write cfg.init_state.default_joint_angles into the live DOF state tensor."""
+    for dof_index, dof_name in enumerate(env.dof_names):
+        if dof_name not in env.cfg.init_state.default_joint_angles:
+            raise ValueError(f"no default standing angle configured for DOF {dof_name}")
+        env.dof_pos[:, dof_index] = float(env.cfg.init_state.default_joint_angles[dof_name])
+    env.dof_vel.zero_()
+    env.gym.set_dof_state_tensor(env.sim, gymtorch.unwrap_tensor(env.dof_state))
+    env.gym.refresh_dof_state_tensor(env.sim)
+    print("Default standing joint angles applied:")
+    for dof_name, dof_pos in zip(env.dof_names, env.dof_pos[0].detach().cpu().tolist()):
+        print(f"  {dof_name:16s} {dof_pos: .4f} rad")
+
+
+@torch.no_grad()
+def print_body_frame_foot_xy(env):
+    """Print foot x/y positions relative to the base yaw frame for robot 0."""
+    env.gym.refresh_actor_root_state_tensor(env.sim)
+    env.gym.refresh_rigid_body_state_tensor(env.sim)
+
+    foot_indices, labels = _ordered_foot_indices(env)
+    foot_positions = env.rigid_body_states[:, foot_indices, :3]
+    translated = foot_positions - env.root_states[:, :3].unsqueeze(1)
+    body_frame = torch.zeros_like(translated)
+    inverse_yaw_quat = quat_conjugate(env.root_states[:, 3:7])
+    for foot_index in range(foot_indices.numel()):
+        body_frame[:, foot_index, :] = quat_apply_yaw(
+            inverse_yaw_quat, translated[:, foot_index, :]
+        )
+
+    print("\nFoot positions in base yaw frame, robot 0 [m]:")
+    print("foot          x         y")
+    for label, xy in zip(labels, body_frame[0, :, :2].detach().cpu().tolist()):
+        print(f"{label:>4s} {xy[0]:9.4f} {xy[1]:9.4f}")
+    print("Nominal Raibert zero-command target from current config [m]:")
+    stance_length = float(env.cfg.rewards.raibert_stance_length)
+    stance_width = float(env.cfg.rewards.raibert_stance_width)
+    nominal = (
+        (stance_length / 2, stance_width / 2),
+        (stance_length / 2, -stance_width / 2),
+        (-stance_length / 2, stance_width / 2),
+        (-stance_length / 2, -stance_width / 2),
+    )
+    for label, xy in zip(FOOT_LABELS, nominal):
+        print(f"{label:>4s} {xy[0]:9.4f} {xy[1]:9.4f}")
 
 
 def main():
@@ -202,6 +311,9 @@ def main():
         args.task = "minich"
         args.num_envs = 1
         env, _ = task_registry.make_env(name="minich", args=args, env_cfg=env_cfg)
+        apply_shared_leg_pd_gains(env)
+        set_default_standing_pose(env)
+        print_body_frame_foot_xy(env)
         try:
             while not env.gym.query_viewer_has_closed(env.viewer):
                 env.render(sync_frame_time=True)

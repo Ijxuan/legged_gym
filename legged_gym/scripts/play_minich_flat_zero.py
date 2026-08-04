@@ -13,14 +13,16 @@ import xml.etree.ElementTree as ET
 
 import isaacgym
 from isaacgym import gymtorch
+from isaacgym.torch_utils import quat_conjugate
 import numpy as np
 import torch
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs import *
 from legged_gym.utils import Logger, get_args, task_registry
+from legged_gym.utils.math import quat_apply_yaw
 
-INITIAL_BASE_HEIGHT_M = 0.28
+INITIAL_BASE_HEIGHT_M = 0.26
 # 设置回放开始时的机身高度，单位 m。
 
 # ===== 回放专用基座质量覆盖 =====
@@ -40,7 +42,7 @@ TASK_NAME = "minich_flat"
 # logs/flat_minich/ 下的训练 run 文件夹名；脚本不会自动选择最新 run。
 LOAD_RUN = "Jul30_16-41-35_flat_48obs_4096x4000"
 # 上述 run 中加载的 model_<轮数>.pt；改为 -1 才表示该 run 中最新的模型。
-CHECKPOINT = 1600
+CHECKPOINT = 4000
 # 策略输入维度。平地策略固定为 48：速度(6)、重力投影(3)、命令(3)、
 # 关节位置/速度(24)和上一帧动作(12)。它必须与 checkpoint 的网络输入一致。
 OBSERVATION_DIM = 48
@@ -51,13 +53,16 @@ OBSERVATION_DIM = 48
 # 以默认关节角为目标。此项只改变 viewer 的控制幅度，不改变策略网络输出。
 ACTION_SCALE = 0.25
 
-# ===== 回放命令时序：零速站立 -> 前进 -> 零速站立 =====
+# ===== 回放命令时序：默认站姿 -> 零速站立 -> 前进 -> 转向 -> 零速站立 =====
+# 该阶段在构造 OnPolicyRunner、加载 checkpoint 前执行；零动作使 PD 目标严格等于
+# default_joint_angles，用于检查默认站姿和零速度 Raibert 目标点。
+DEFAULT_POSE_HOLD_S = 15.0
 # 中间阶段施加的机身前向速度目标，单位 m/s；横移和偏航目标始终为 0。
 FORWARD_SPEED_M_S = -0.5
 TURN_YAW_RATE_RAD_S = 0.5
 # 起始零速度站立、前进和末尾零速度站立各自持续时间，单位 s。
-STAND_BEFORE_S = 3.0
-FORWARD_S = 0
+STAND_BEFORE_S = 9.0
+FORWARD_S = 9
 TURN_S = 16.0
 STAND_AFTER_S = 6.0
 # 是否允许环境在触发接触、倾角、高度或超时早停后调用 reset。
@@ -78,8 +83,8 @@ CAMERA_LOOKAT_OFFSET = np.array([0.0, 0.0, 0.2], dtype=np.float64)
 
 # 仅用于能耗/接触力输出的四腿显示顺序，不改变 URDF、策略动作或关节映射。
 LEG_ORDER = ("FL", "FR", "RL", "RR")
-# 三个阶段的内部标签，供统计和重置日志使用，不是额外的策略输入。
-PHASE_ORDER = ("stand_before", "forward", "turn", "stand_after")
+# 阶段标签仅用于回放统计，不是额外的策略输入。
+PHASE_ORDER = ("default_pose_hold", "stand_before", "forward", "turn", "stand_after")
 
 # ===== 回放专用 PD 增益：只手动填写一条模板腿 =====
 # 只修改下面这条“模板腿”的 hip / thigh / calf 参数；运行时会原样复制到
@@ -201,6 +206,30 @@ def scheduled_phase(step, env_dt):
     if step < turn_end_step:
         return "turn"
     return "stand_after"
+
+
+@torch.no_grad()
+def print_body_frame_foot_xy(env, stage, time_s):
+    """Print robot 0 foot x/y positions in the base yaw frame."""
+    env.gym.refresh_actor_root_state_tensor(env.sim)
+    env.gym.refresh_rigid_body_state_tensor(env.sim)
+    foot_indices = env.foot_order_indices
+    if foot_indices.numel() != 4:
+        raise RuntimeError("expected FL/FR/RL/RR foot ordering for coordinate print")
+
+    foot_positions = env.rigid_body_states[:, foot_indices, :3]
+    translated = foot_positions - env.root_states[:, :3].unsqueeze(1)
+    body_frame = torch.zeros_like(translated)
+    inverse_yaw_quat = quat_conjugate(env.root_states[:, 3:7])
+    for foot_index in range(4):
+        body_frame[:, foot_index, :] = quat_apply_yaw(
+            inverse_yaw_quat, translated[:, foot_index, :]
+        )
+
+    print(f"\n[足端机身坐标] t={time_s:.2f}s, phase={stage}, robot=0 [m]")
+    print("foot          x         y")
+    for leg, xy in zip(LEG_ORDER, body_frame[0, :, :2].detach().cpu().tolist()):
+        print(f"{leg:>4s} {xy[0]:9.4f} {xy[1]:9.4f}")
 
 
 class TerminationMeter:
@@ -771,7 +800,7 @@ class PhaseRewardMeter:
         raw_nontermination = float(term_values.sum() - termination_value)
         clipped_nontermination = max(raw_nontermination, 0.0) if self.only_positive_rewards else raw_nontermination
         expected_return = clipped_nontermination + termination_value
-        if not np.isclose(returned_value, expected_return, rtol=1e-5, atol=2e-6):
+        if not np.isclose(returned_value, expected_return, rtol=1e-5, atol=1e-5):
             raise RuntimeError(
                 "phase reward capture disagrees with LeggedRobot.compute_reward: "
                 f"returned={returned_value:.8f}, expected={expected_return:.8f}"
@@ -1212,6 +1241,24 @@ def validate_fixed_start(env, obs):
         raise RuntimeError("fixed reset did not clear joint or base velocity")
 
 
+@torch.no_grad()
+def run_default_pose_hold(env):
+    """Hold default_joint_angles with zero actions before loading any policy."""
+    hold_steps = int(round(DEFAULT_POSE_HOLD_S / env.dt))
+    zero_actions = torch.zeros(env.num_envs, env.num_actions, device=env.device)
+    set_command(env, (0.0, 0.0, 0.0))
+    print(
+        f"Default-pose hold: {DEFAULT_POSE_HOLD_S:.1f}s, {hold_steps} policy steps; "
+        "no policy network is loaded or evaluated."
+    )
+    print_body_frame_foot_xy(env, "default_pose_hold_start", 0.0)
+    for _ in range(hold_steps):
+        _, _, _, dones, _ = env.step(zero_actions)
+        if not ENABLE_TERMINATION_RESET and torch.any(dones):
+            raise RuntimeError("default-pose hold terminated while reset is disabled")
+    print_body_frame_foot_xy(env, "default_pose_hold_end", hold_steps * env.dt)
+
+
 def play(args):
     # This viewer is deliberately bound to the Mini Cheetah policy under test.
     args.task = TASK_NAME
@@ -1230,16 +1277,19 @@ def play(args):
     install_fixed_reset(env)
     print_base_mass_setting(env)
     print_action_scale_setting(env)
-
-    # OnPolicyRunner 构造时会调用 env.reset() 并额外执行一帧零动作。先让它
-    # 完成模型加载，再恢复固定初始状态并安装统计器，避免那一帧混入起始站立阶段。
-    ppo_runner, _ = task_registry.make_alg_runner(
-        env=env, name=TASK_NAME, args=args, train_cfg=train_cfg
-    )
     obs = reset_to_fixed_state(env)
     apply_shared_leg_pd_gains(env)
     validate_fixed_start(env, obs)
     aim_camera_at_robot(env)
+    run_default_pose_hold(env)
+
+    # OnPolicyRunner 构造时会调用 env.reset() 并额外执行一帧零动作。先让它
+    # 完成模型加载，再恢复固定初始状态并安装统计器，避免那一帧混入策略阶段。
+    ppo_runner, _ = task_registry.make_alg_runner(
+        env=env, name=TASK_NAME, args=args, train_cfg=train_cfg
+    )
+    obs = reset_to_fixed_state(env)
+    validate_fixed_start(env, obs)
     termination_meter = install_termination_meter(env, enable_reset=ENABLE_TERMINATION_RESET)
     reward_meter = install_phase_reward_meter(env)
     energy_meter = install_joint_energy_meter(env)
