@@ -193,6 +193,7 @@ class LeggedRobot(BaseTask):
         self.zero_command_elapsed[env_ids] = 0.
         self.foot_clearance_max[env_ids] = 0.
         self.foot_clearance_elapsed[env_ids] = 0.
+        self.raibert_last_contacts[env_ids] = False
         self._reset_actuator_domain_randomization(env_ids)
         self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
@@ -624,6 +625,7 @@ class LeggedRobot(BaseTask):
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
+        self.raibert_last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
         self.foot_clearance_max = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.float, device=self.device, requires_grad=False)
         self.foot_clearance_elapsed = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
@@ -1123,8 +1125,16 @@ class LeggedRobot(BaseTask):
         return torch.exp(-ang_vel_error/self.cfg.rewards.tracking_sigma)
 
     def _reward_raibert_heuristic(self):
-        """Penalize deviation from a phase-free Raibert foothold plan."""
+        """Penalize phase-free Raibert foothold error only at touchdown."""
         if self.foot_order_indices.numel() != 4:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        contact_threshold = self.cfg.rewards.feet_air_time_contact_force_threshold
+        contact = LeggedRobot._foot_normal_forces(self, self.foot_order_indices) > contact_threshold
+        first_contact = torch.logical_and(contact, torch.logical_not(self.raibert_last_contacts))
+        self.raibert_last_contacts = contact
+
+        if not torch.any(first_contact):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         foot_states = self.rigid_body_states[:, self.foot_order_indices, :3]
@@ -1165,11 +1175,14 @@ class LeggedRobot(BaseTask):
         err_raibert_heuristic = torch.abs(
             desired_footsteps_body_frame - footsteps_in_body_frame[:, :, 0:2]
         )
-        return torch.sum(torch.square(err_raibert_heuristic), dim=(1, 2))
+        touchdown_error = torch.sum(torch.square(err_raibert_heuristic), dim=2) * first_contact
+        return torch.sum(touchdown_error, dim=1)
 
-    def _foot_normal_forces(self):
-        """Return non-negative world-up force for every configured foot."""
-        return torch.clamp(self.contact_forces[:, self.feet_indices, 2], min=0.0)
+    def _foot_normal_forces(self, foot_indices=None):
+        """Return non-negative world-up force for the requested feet."""
+        if foot_indices is None:
+            foot_indices = self.feet_indices
+        return torch.clamp(self.contact_forces[:, foot_indices, 2], min=0.0)
 
     def _foot_terrain_heights(self, foot_positions):
         """Return local terrain height under each foot position."""

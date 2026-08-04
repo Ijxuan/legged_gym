@@ -99,7 +99,7 @@ class MiniChFlatCfg(MiniChRoughCfg):
             low_speed_load_balance = -5.0  # 低速四足载荷均衡惩罚
             joint_power = 0.0  # 未实现
             foot_clearance = 2.0  # 转向时的四足周期最大抬腿高度奖励
-            raibert_heuristic = -2.0  # Raibert 落足点误差惩罚
+            raibert_heuristic = -1975.3  # touchdown 时的 Raibert 落足点误差惩罚
             smoothness = 0.0  # 未实现
 
         # 说明：
@@ -115,8 +115,12 @@ class MiniChFlatCfg(MiniChRoughCfg):
         #   每条腿的最大足底离地高度，再取四条腿 max 的最小值评分；
         #   纯前进、纯后退和零速都不会拿这个奖励。
         # - raibert_heuristic 是机身坐标系足端落点平方误差的负权重项。
-        #   使用固定预测时域的 Raibert 落足规划，不维护步态或足端相位，
-        #   也不需要额外命令维度。
+        #   使用固定预测时域的 Raibert 落足规划，不维护步态或足端相位。
+        #   只有足端法向接触力从不接触变为接触的一帧才计算，接触阈值
+        #   复用 feet_air_time_contact_force_threshold，即默认 1 N。
+        #   -1975.3 约等于 -1 / (0.5*0.20*1.0*0.45/2)^2：当 vx=vy=0、
+        #   yaw_rate=1 且单脚保持零速度目标落点时，单次 touchdown 惩罚
+        #   约等于线速度跟踪项理论最大奖励 1.0 的量级。
         # - orientation 只在 ||cmd_xy|| <= orientation_command_threshold 时生效；
         #   原地旋转时 cmd_xy 为 0，因此姿态惩罚仍会生效。
 

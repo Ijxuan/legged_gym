@@ -318,8 +318,11 @@ class TestMiniChRewardShaping(unittest.TestCase):
                 ]
             ]),
             foot_order_indices=torch.tensor([0, 1, 2, 3]),
+            contact_forces=torch.tensor([[[0.0, 0.0, 2.0]] * 4]),
+            raibert_last_contacts=torch.zeros(1, 4, dtype=torch.bool),
             commands=torch.zeros(1, 3),
             cfg=SimpleNamespace(rewards=SimpleNamespace(
+                feet_air_time_contact_force_threshold=1.0,
                 raibert_stance_width=0.30,
                 raibert_stance_length=0.45,
                 raibert_foot_placement_time=0.20,
@@ -329,6 +332,43 @@ class TestMiniChRewardShaping(unittest.TestCase):
         reward = LeggedRobot._reward_raibert_heuristic(robot)
 
         self.assertTrue(torch.allclose(reward, torch.zeros(1), atol=1e-6))
+        self.assertTrue(torch.equal(robot.raibert_last_contacts, torch.ones(1, 4, dtype=torch.bool)))
+
+    def test_raibert_heuristic_only_penalizes_touchdown_feet_with_air_time_threshold(self):
+        robot = SimpleNamespace(
+            num_envs=1,
+            device="cpu",
+            base_quat=torch.tensor([[0.0, 0.0, 0.0, 1.0]]),
+            root_states=torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
+            rigid_body_states=torch.tensor([
+                [
+                    [0.225, 0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.225, -0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [-0.225, 0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [-0.225, -0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ]
+            ]),
+            foot_order_indices=torch.tensor([0, 1, 2, 3]),
+            contact_forces=torch.tensor([[
+                [0.0, 0.0, 2.0],
+                [0.0, 0.0, 2.0],
+                [0.0, 0.0, 2.0],
+                [0.0, 0.0, 1.0],
+            ]]),
+            raibert_last_contacts=torch.tensor([[False, True, False, False]]),
+            commands=torch.tensor([[0.0, 0.0, 1.0]]),
+            cfg=SimpleNamespace(rewards=SimpleNamespace(
+                feet_air_time_contact_force_threshold=1.0,
+                raibert_stance_width=0.30,
+                raibert_stance_length=0.45,
+                raibert_foot_placement_time=0.20,
+            )),
+        )
+
+        reward = LeggedRobot._reward_raibert_heuristic(robot)
+
+        self.assertTrue(torch.allclose(reward, torch.tensor([0.0010125]), atol=1e-7))
+        self.assertTrue(torch.equal(robot.raibert_last_contacts, torch.tensor([[True, True, True, False]])))
 
     def test_zero_command_elapsed_tracks_only_an_uninterrupted_stand(self):
         robot = SimpleNamespace(
