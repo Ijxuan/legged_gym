@@ -209,6 +209,13 @@ class LeggedRobotCfg(BaseConfig):
         foot_clearance_foot_radius = 0.02
         foot_clearance_command_threshold = 0.2
         foot_clearance_period_s = 1.0
+        # Raibert-style foot placement heuristic. The raw term is a squared
+        # foothold-position error, so tasks typically use a negative scale.
+        raibert_heuristic = 0.
+        raibert_stance_width = 0.30
+        raibert_stance_length = 0.45
+        # Fixed velocity-prediction horizon for the phase-free foothold plan.
+        raibert_foot_placement_time = 0.20
         # Low-speed support rewards use their own command gate so changing an
         # orientation threshold does not silently change support behavior.
         low_speed_support_command_threshold = 0.

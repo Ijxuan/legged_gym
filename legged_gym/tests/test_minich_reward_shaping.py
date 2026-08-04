@@ -303,6 +303,33 @@ class TestMiniChRewardShaping(unittest.TestCase):
         self.assertTrue(torch.equal(robot.foot_clearance_max[3:], torch.zeros(3, 4)))
         self.assertTrue(torch.equal(robot.foot_clearance_elapsed[3:], torch.zeros(3)))
 
+    def test_raibert_heuristic_matches_phase_free_nominal_footholds(self):
+        robot = SimpleNamespace(
+            num_envs=1,
+            device="cpu",
+            base_quat=torch.tensor([[0.0, 0.0, 0.0, 1.0]]),
+            root_states=torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
+            rigid_body_states=torch.tensor([
+                [
+                    [0.225, 0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.225, -0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [-0.225, 0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [-0.225, -0.150, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ]
+            ]),
+            foot_order_indices=torch.tensor([0, 1, 2, 3]),
+            commands=torch.zeros(1, 3),
+            cfg=SimpleNamespace(rewards=SimpleNamespace(
+                raibert_stance_width=0.30,
+                raibert_stance_length=0.45,
+                raibert_foot_placement_time=0.20,
+            )),
+        )
+
+        reward = LeggedRobot._reward_raibert_heuristic(robot)
+
+        self.assertTrue(torch.allclose(reward, torch.zeros(1), atol=1e-6))
+
     def test_zero_command_elapsed_tracks_only_an_uninterrupted_stand(self):
         robot = SimpleNamespace(
             commands=torch.tensor([

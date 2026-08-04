@@ -844,6 +844,24 @@ class LeggedRobot(BaseTask):
         for i in range(len(feet_names)):
             self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], feet_names[i])
 
+        self.foot_order_indices = self.feet_indices.clone()
+        if len(feet_names) == 4:
+            ordered_indices = []
+            for prefix in ("FL_", "FR_", "RL_", "RR_"):
+                matches = [
+                    int(index)
+                    for index in self.feet_indices.detach().cpu().tolist()
+                    if body_names[int(index)].startswith(prefix)
+                ]
+                if len(matches) != 1:
+                    ordered_indices = []
+                    break
+                ordered_indices.append(matches[0])
+            if len(ordered_indices) == 4:
+                self.foot_order_indices = torch.tensor(
+                    ordered_indices, dtype=torch.long, device=self.device, requires_grad=False
+                )
+
         self.penalised_contact_indices = torch.zeros(len(penalized_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(penalized_contact_names)):
             self.penalised_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], penalized_contact_names[i])
@@ -901,7 +919,10 @@ class LeggedRobot(BaseTask):
         self.dt = self.cfg.control.decimation * self.sim_params.dt
         self.obs_scales = self.cfg.normalization.obs_scales
         self.reward_scales = class_to_dict(self.cfg.rewards.scales)
-        self._needs_rigid_body_state = self.reward_scales.get("foot_clearance", 0.) != 0.
+        self._needs_rigid_body_state = (
+            self.reward_scales.get("foot_clearance", 0.) != 0.
+            or self.reward_scales.get("raibert_heuristic", 0.) != 0.
+        )
         self.command_ranges = class_to_dict(self.cfg.commands.ranges)
         if self.cfg.terrain.mesh_type not in ['heightfield', 'trimesh']:
             self.cfg.terrain.curriculum = False
@@ -1101,6 +1122,51 @@ class LeggedRobot(BaseTask):
         ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
         return torch.exp(-ang_vel_error/self.cfg.rewards.tracking_sigma)
 
+    def _reward_raibert_heuristic(self):
+        """Penalize deviation from a phase-free Raibert foothold plan."""
+        if self.foot_order_indices.numel() != 4:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        foot_states = self.rigid_body_states[:, self.foot_order_indices, :3]
+        cur_footsteps_translated = foot_states - self.root_states[:, :3].unsqueeze(1)
+        footsteps_in_body_frame = torch.zeros(self.num_envs, 4, 3, device=self.device)
+        for i in range(4):
+            footsteps_in_body_frame[:, i, :] = quat_apply_yaw(
+                quat_conjugate(self.base_quat), cur_footsteps_translated[:, i, :]
+            )
+
+        stance_width = self.cfg.rewards.raibert_stance_width
+        stance_length = self.cfg.rewards.raibert_stance_length
+        desired_ys_nom = torch.tensor(
+            [stance_width / 2, -stance_width / 2, stance_width / 2, -stance_width / 2],
+            device=self.device,
+        ).unsqueeze(0).repeat(self.num_envs, 1)
+        desired_xs_nom = torch.tensor(
+            [stance_length / 2, stance_length / 2, -stance_length / 2, -stance_length / 2],
+            device=self.device,
+        ).unsqueeze(0).repeat(self.num_envs, 1)
+
+        forward_velocity = self.commands[:, 0:1]
+        lateral_velocity = self.commands[:, 1:2]
+        yaw_velocity = self.commands[:, 2:3]
+        placement_time = self.cfg.rewards.raibert_foot_placement_time
+
+        # Predict each hip's body-frame velocity over a fixed horizon.  This
+        # provides a command-dependent Raibert foothold target without a gait
+        # clock, contact phase, or other per-leg phase state.
+        desired_xs = desired_xs_nom + 0.5 * placement_time * forward_velocity
+        desired_ys = desired_ys_nom + 0.5 * placement_time * (
+            lateral_velocity + yaw_velocity * desired_xs_nom
+        )
+
+        desired_footsteps_body_frame = torch.cat(
+            (desired_xs.unsqueeze(2), desired_ys.unsqueeze(2)), dim=2
+        )
+        err_raibert_heuristic = torch.abs(
+            desired_footsteps_body_frame - footsteps_in_body_frame[:, :, 0:2]
+        )
+        return torch.sum(torch.square(err_raibert_heuristic), dim=(1, 2))
+
     def _foot_normal_forces(self):
         """Return non-negative world-up force for every configured foot."""
         return torch.clamp(self.contact_forces[:, self.feet_indices, 2], min=0.0)
@@ -1262,7 +1328,7 @@ class LeggedRobot(BaseTask):
         self.last_contacts = contact
         first_contact = (self.feet_air_time > 0.) * contact_filt
         self.feet_air_time += self.dt
-        rew_airTime = torch.sum((self.feet_air_time - 0.75) * first_contact, dim=1) # reward only on first contact with the ground
+        rew_airTime = torch.sum((self.feet_air_time - 0.4) * first_contact, dim=1) # reward only on first contact with the ground
         # At zero and very low speed, favor stable support rather than a swing
         # event. Feet-air-time shaping begins only above 0.2 m/s.
         # rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.2
